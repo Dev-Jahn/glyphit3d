@@ -1,0 +1,26 @@
+{
+  "name": "ascii3d",
+  "version": "0.0.1",
+  "description": "glyph-constrained 3D renderer — M0: image→glyph optimizer core",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "cli": "tsx src/cli.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": "true",
+  "devDependencies": {
+    "@types/fontkit": "^2.0.9",
+    "@types/node": "^26.1.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.2",
+    "fontkit": "^2.0.4"
+  }
+}
