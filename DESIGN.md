@@ -188,6 +188,18 @@ SSE_c = ‖T̃_c‖²·(1 − ρ_c²),   ρ_c = corr(α̃, T̃_c)
 아무것도 하지 않는 죽은 손잡이다 — DC/AC 재가중이 의미를 갖는 곳은 평균 재현이
 깨지는 **제약 모드**(fg-only, palette-256, theme-16, clamp된 셀)뿐이다 (§6).
 
+**Selection-prior 일반화.** 위 따름정리는 DC/AC 재가중이라는 특정 손잡이를 넘어
+임의의 selection prior로 확장된다: 무제약 truecolor에서 전수 LS argmin은 이미 셀별
+재구성 SSE를 정확히 최소화하므로, 선택 점수에 최적해와 무관한 항을 더하거나 후보를
+게이팅하는 **어떤 prior도 per-cell 재구성 메트릭을 개선할 수 없다** — 최선이 tie,
+그 외엔 argmin을 최적에서 밀어낼 뿐이다. Prior가 실제로 활동할 여지는 평균 재현이
+깨지는 제약 모드, 그리고 per-cell 재구성이 못 재는 축(cross-cell 윤곽 §4.3, temporal
+§4.9)에만 있다.[^m1-sel]
+
+[^m1-sel]: M1 실증(docs/M1-RESULTS.md): shading-유도 선택(split)은 argmin을 실제로
+바꾸나(FlightHelmet 148/1123 object cell) SSIM은 하락; object-id anti-bleed는 비경계
+flip 0으로 정확히 작동하나 truecolor에서 tie. 둘 다 이 일반화의 예측과 일치한다.
+
 ### 3.4 Washout(퇴화 피팅) 방지
 
 제곱오차는 잔차를 티끌만큼 줄이는 아무 구조나 보상하므로, 매끈한 영역이 "거의
@@ -291,6 +303,11 @@ shading 버퍼에서, fg/bg 색은 albedo 버퍼에서** — 색은 머티리얼
 인코딩. 셀의 supersampled albedo에 2-클러스터링(§3.6과 같은 열거)으로 대비
 최대의 2색 선택.
 
+> **상태 (2026-07-04, M1 ablation):** **충실도 변형**(shading 채널로 glyph 선택을
+> 유도, `splitSelection`)은 무제약 Q3과 제약 Q2 **양 regime에서 null/부정**(argmin은
+> 실제로 바뀌나 재구성 SSIM은 하락) → **충실도 주장 철회**. **스타일화 변형**(색=albedo,
+> `styleAlbedoColors`)은 유지 — 시각 전용, SSIM 무주장. 근거: docs/M1-RESULTS.md.
+
 ### 4.2 Object-id anti-bleed + depth-peeling 투명도 [M1 코어]
 - 경계 셀에서 두 물체 색을 **평균 내지 않는다**(뭉갬의 주범). id 경계 방향에
   맞는 half/quarter block을 골라 fg=물체A 색, bg=물체B 색 — 셀 하나가 두 표면을
@@ -298,6 +315,12 @@ shading 버퍼에서, fg/bg 색은 albedo 버퍼에서** — 색은 머티리얼
 - 투명/얇은 지오메트리는 depth-peel 2층 → **fg=근층, bg=원층**. 터미널 셀의
   2색 채널이 두 depth layer를 인코딩하는 데 정확히 대응된다. (depth-peel은
   M3 이후 옵션.)
+
+> **상태 (2026-07-04, M1 ablation):** 기계 구현·검증 완료 — boundary cell에서만
+> id-partition mask에 보너스, **비경계 flip 정확히 0**(κ=0.02/0.05/0.1에서 4/13/25 flip).
+> 무제약 truecolor에서 boundary-cell SSIM은 **tie**, 제약 Q2에서 **미미한 양수**
+> (+0.0006~0.0007, sweep 전 구간 악화 없음). 잔여 기대 역할: 디더 배리어(제약 모드,
+> §3.8)·temporal(§4.9)·유사색 실루엣. 기본 off. 근거: docs/M1-RESULTS.md.
 
 ### 4.3 해석적 실루엣/크리즈 → 방향 prior [M3 코어]
 depth 점프=가림 실루엣, id 점프=물체 경계, normal 각도 점프=크리즈로 **타입이
@@ -715,6 +738,8 @@ glyph-aware 적응 path tracing(§4.7), lighting 최적화(§4.8), SGR attribute
    후보 원인: 셀당 2색 제약이 specular highlight에서 포화, 실루엣 셀의
    gate/MDL 상호작용; M1의 3D-aware 기능(albedo/shading 분리 §4.1)이 자연히
    개선하는지 먼저 관찰 후 별도 대응 결정.
+   - M1 실측: **3D selection prior로는 닫히지 않음**이 확인됨(§3.3 일반화, docs/M1-RESULTS.md).
+     남은 후보는 fit/atlas 측 — charset 확대(braille), multi-scale loss, atlas AA 정합.
 
 ---
 
