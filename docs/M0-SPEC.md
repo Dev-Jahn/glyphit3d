@@ -192,9 +192,17 @@ patch `T[3][P]`, `dxT[3][P]`, `dyT[3][P]` (crop from full-image gradients),
 
 `match.ts`: `export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): Grid`
 - Per cell:
-  1. Contrast gate: if `EacLuma / P < opts.gateTau` → emit `{ch:' ', fg:null, bg:mean}`
+  1. Contrast gate: gate on the FULL per-channel patch AC energy
+     `E_AC = Σ_c (STT[c] − ST[c]²/P)` (== `EacLumaScale` below) — if
+     `E_AC / (3·P) < opts.gateTau` → emit `{ch:' ', fg:null, bg:mean}`
      (mean = per-channel ST/P) and skip the scan. (fg-bg mode; for mono/fg emit
      nearest representable: mono → space; fg → space with fixed bg.)
+     **Correction (adversarial review):** the gate previously thresholded
+     luma-only AC (`EacLuma/P`), which flattened isoluminant chroma structure
+     (e.g. an equal-luma red/green split) to a muddy mean; DESIGN §3.4 defines
+     the gate on the full patch AC energy, so it is thresholded per channel.
+     The statistic lives in the WORKING space (τ calibrated for the gamma
+     default), not linear luma.
   2. Scan all glyphs. Per channel c compose cell-side stats:
      - Q1–Q3: `SaT = Σα·T_c`, `S1T = ST[c]`, `STT = STT[c]` with plain FitStatsG.
      - Q4: `SaT = Σα·T_c + λ²(Σ dxA·dxT_c + Σ dyA·dyT_c)`, `S1T = ST[c]`,

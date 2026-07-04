@@ -13,6 +13,10 @@ function srgb(rgb: ArrayLike<number>): [number, number, number] {
   return [toU8(rgb[0]!), toU8(rgb[1]!), toU8(rgb[2]!)];
 }
 
+// Q0 is LINEAR-ONLY: it treats opts.fixedBg as linear RGB and bakes linear-encoded
+// colors (ignores opts.space). Unlike matchGrid (which converts fixedFg/fixedBg into
+// the working space in gamma mode), Q0 has no working-space concept — it is the
+// strawman and is always rasterized in linear.
 export function rampGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): Grid {
   const { cellW, cellH } = atlas;
   const cols = Math.floor(img.w / cellW);

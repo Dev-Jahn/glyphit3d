@@ -34,7 +34,9 @@ export function resampleArea(img: LinearImage, w: number, h: number): LinearImag
     const inStart = ox * sx;
     const inEnd = inStart + sx;
     const ixFirst = Math.floor(inStart);
-    const ixLast = Math.ceil(inEnd) - 1;
+    // clamp: float rounding of inEnd can push Math.ceil one past the last input
+    // column (OOB read → NaN in the trailing output pixel).
+    const ixLast = Math.min(img.w - 1, Math.ceil(inEnd) - 1);
     for (let iy = 0; iy < img.h; iy++) {
       let r = 0, g = 0, b = 0;
       const rowBase = iy * img.w * 3;
@@ -58,7 +60,8 @@ export function resampleArea(img: LinearImage, w: number, h: number): LinearImag
     const inStart = oy * sy;
     const inEnd = inStart + sy;
     const iyFirst = Math.floor(inStart);
-    const iyLast = Math.ceil(inEnd) - 1;
+    // clamp: float rounding can push Math.ceil one past the last input row.
+    const iyLast = Math.min(img.h - 1, Math.ceil(inEnd) - 1);
     for (let ox = 0; ox < w; ox++) {
       let r = 0, g = 0, b = 0;
       for (let iy = iyFirst; iy <= iyLast; iy++) {

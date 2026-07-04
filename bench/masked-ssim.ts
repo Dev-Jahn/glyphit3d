@@ -40,6 +40,29 @@ function lumaU8From(gl01: Float64Array): Float64Array {
   return out;
 }
 
+// Per-cell mean gamma-luma in [0,1] — the SAME statistic objectMask thresholds. The
+// Otsu split must be derived from THIS histogram (per-cell means), not the per-pixel
+// luma histogram, or the threshold is computed on a different distribution than it is
+// applied to (diagnostic-consistency fix; no verdict impact).
+export function cellMeanLuma01(img: LinearImage, cellW: number, cellH: number): Float64Array {
+  const { w } = img;
+  const gl = gammaLuma01(img);
+  const cols = Math.floor(w / cellW);
+  const rows = Math.floor(img.h / cellH);
+  const out = new Float64Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let s = 0;
+      for (let ly = 0; ly < cellH; ly++) {
+        const y = r * cellH + ly;
+        for (let lx = 0; lx < cellW; lx++) s += gl[y * w + (c * cellW + lx)]!;
+      }
+      out[r * cols + c] = s / (cellW * cellH);
+    }
+  }
+  return out;
+}
+
 // Otsu threshold (in [0,1]) on the gamma-luma histogram — automatic, data-driven
 // object/background split. Used because the spec's literal τ≈0.06 marks 100% of
 // these bright-gradient-background renders as object (degenerate).

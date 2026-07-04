@@ -187,6 +187,66 @@ describe('matchGrid gamma working space (predict-terminal, DESIGN §3.1)', () =>
   });
 });
 
+describe('contrast gate uses full per-channel E_AC (DESIGN §3.4)', () => {
+  let atlas: Atlas;
+  beforeAll(async () => {
+    atlas = await buildAtlas(FONT, 16, 'blocks');
+  }, 60000);
+
+  it('does NOT gate an isoluminant red/green split (luma-only would flatten it to a mean)', () => {
+    const half = Math.floor(atlas.cellH / 2);
+    // top pure red, bottom green scaled to the SAME linear luma → per-pixel luma is
+    // constant, so a luma-only gate (EacLuma≈0) fires and washes the split into a muddy
+    // mean. The full per-channel E_AC is large (red 1→0, green 0→g), so the correct gate
+    // keeps the cell and the scan reconstructs the split with a half-block.
+    const g = 0.2126 / 0.7152; // luma(0,g,0) === luma(1,0,0)
+    const img = makeImage(atlas, 1, (_col, _lx, ly) => (ly < half ? [1, 0, 0] : [0, g, 0]));
+    const cell = matchGrid(img, atlas, defaults({ quality: 3, space: 'linear' })).cells[0]!;
+    expect(cell.ch).not.toBe(' ');          // NOT gated
+    expect(['▀', '▄']).toContain(cell.ch);  // reconstructs the split with a half-block
+    expect(cell.fg).not.toBeNull();
+    expect(cell.bg).not.toBeNull();
+    const sse = cellSSE(atlas, cell.ch, cell.fg!, cell.bg!, img, 0);
+    expect(sse / (atlas.P * 3)).toBeLessThan(0.02);
+  });
+
+  it('still gates a genuinely flat gray cell (per-channel E_AC ≈ 0)', () => {
+    const v = 0.5;
+    const img = makeImage(atlas, 2, () => [v, v, v]);
+    const grid = matchGrid(img, atlas, defaults({ quality: 3, space: 'linear' }));
+    for (const cell of grid.cells) {
+      expect(cell.ch).toBe(' ');
+      expect(cell.fg).toBeNull();
+    }
+  });
+});
+
+describe('matchGrid fixedBg working-space contract (linear-RGB option, space-invariant)', () => {
+  let atlas: Atlas;
+  beforeAll(async () => {
+    atlas = await buildAtlas(FONT, 16, 'blocks');
+  }, 60000);
+
+  // fixedBg is documented linear RGB. linear 0.1 → sRGB u8 89. The EMITTED u8 must be 89
+  // regardless of working space; only the internal fit converts. Pre-fix, gamma mode
+  // consumed 0.1 raw as a gamma value → emitted 26.
+  it('Q2 fixedBg=[0.1,0.1,0.1] emits bg [89,89,89] in BOTH gamma (default) and linear space', () => {
+    const half = Math.floor(atlas.cellH / 2);
+    const img = makeImage(atlas, 2, (col, _lx, ly) => {
+      const topWhite = col === 0 ? ly < half : ly >= half;
+      const v = topWhite ? 1 : 0;
+      return [v, v, v];
+    });
+    const fixedBg: [number, number, number] = [0.1, 0.1, 0.1];
+    for (const space of ['gamma', 'linear'] as const) {
+      const grid = matchGrid(img, atlas, defaults({ quality: 2, fixedBg, space }));
+      for (const cell of grid.cells) {
+        expect(cell.bg).toEqual([89, 89, 89]);
+      }
+    }
+  });
+});
+
 describe('rampGrid (Q0)', () => {
   let atlas: Atlas;
   beforeAll(async () => {

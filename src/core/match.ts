@@ -80,8 +80,15 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   const isQ4 = quality === 4;
   const lam2 = opts.edgeLambda * opts.edgeLambda;
   const G = glyphs.length;
-  const ffg = opts.fixedFg;
-  const fbg = opts.fixedBg;
+  // fixedFg/fixedBg are documented linear RGB. The fit, gate branch and emit all run
+  // in the WORKING space, so in gamma mode convert them to gamma floats [0,1] once
+  // here (the option contract stays space-invariant; only internals convert).
+  const toWork = (rgb: [number, number, number]): [number, number, number] =>
+    space === 'gamma'
+      ? [linearToSrgb(rgb[0]) / 255, linearToSrgb(rgb[1]) / 255, linearToSrgb(rgb[2]) / 255]
+      : rgb;
+  const ffg = toWork(opts.fixedFg);
+  const fbg = toWork(opts.fixedBg);
   const cells: GridCell[] = new Array(cols * rows);
 
   // reused glyph-side Gram stats (mutated per glyph, never per channel)
@@ -94,20 +101,22 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       const ST = cs.ST, STT = cs.STT, minT = cs.minT, maxT = cs.maxT, gradTT = cs.gradTT;
       const cellIdx = row * cols + col;
 
-      // 1. contrast gate BEFORE the scan
-      if (cs.EacLuma / P < opts.gateTau) {
+      // Patch AC energy E_AC = Σ_c (STT_c − ST_c²/P) — the full per-channel AC energy
+      // (DESIGN §3.4). Used BOTH for the contrast gate and the MDL penalty scale.
+      const eacScale =
+        (STT[0]! - (ST[0]! * ST[0]!) / P) +
+        (STT[1]! - (ST[1]! * ST[1]!) / P) +
+        (STT[2]! - (ST[2]! * ST[2]!) / P);
+
+      // 1. contrast gate BEFORE the scan. Gate on full per-channel E_AC (working space),
+      // not luma-only: luma-only flattens isoluminant chroma structure to a muddy mean.
+      if (eacScale / (3 * P) < opts.gateTau) {
         const mean: [number, number, number] = [ST[0]! / P, ST[1]! / P, ST[2]! / P];
         if (quality === 1) cells[cellIdx] = { ch: ' ', fg: encode(ffg), bg: encode(fbg) };
         else if (quality === 2) cells[cellIdx] = { ch: ' ', fg: encode(mean), bg: encode(fbg) };
         else cells[cellIdx] = { ch: ' ', fg: null, bg: encode(mean) };
         continue;
       }
-
-      // AC-energy scale for the MDL penalty (plain per-channel AC energy summed)
-      const eacScale =
-        (STT[0]! - (ST[0]! * ST[0]!) / P) +
-        (STT[1]! - (ST[1]! * ST[1]!) / P) +
-        (STT[2]! - (ST[2]! * ST[2]!) / P);
 
       // 2. scan all glyphs
       let bestScore = Infinity;

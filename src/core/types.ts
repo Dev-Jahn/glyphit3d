@@ -26,7 +26,7 @@ export interface MatchOptions {
   quality: 0 | 1 | 2 | 3 | 4;   // Q0..Q4 (DESIGN §6). quality implies colorMode: Q1=mono, Q2=fg, Q3/Q4=fg-bg
   space?: 'linear' | 'gamma';  // working space for fit/selection (DESIGN §3.1). default 'gamma' (predict-terminal); 'linear' = bake (opt-in)
   edgeLambda: number;          // λ_e, only used at Q4. default 0.35
-  gateTau: number;             // contrast gate threshold on E_AC per pixel (linear luma). default 2e-4
+  gateTau: number;             // contrast gate threshold on full per-channel E_AC = Σ_c(STT_c−ST_c²/P), per pixel-channel (÷3P). The gate statistic lives in the WORKING space (tau calibrated for gamma), NOT linear luma. default 2e-4
   mdlLambda: number;           // ink complexity penalty weight. default 0.02
   fixedBg: [number, number, number]; // linear RGB, for mono/fg modes and Q0. default [0,0,0]
   fixedFg: [number, number, number]; // linear RGB, for mono mode. default [1,1,1]

@@ -1,16 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { dirname, join } from 'node:path';
 import { buildAtlas } from '../src/atlas/atlas.js';
 import { loadLinear, resampleArea } from '../src/image/image.js';
 import { matchGrid } from '../src/core/match.js';
-import { rasterizeGrid } from '../src/render/raster.js';
+import { rasterizeGrid, savePng } from '../src/render/raster.js';
 import { ssim } from '../src/metric/ssim.js';
 import { parseAnsiToGrid } from './ansi-parse.js';
-import { objectMask, otsuThreshold, maskedSsim, gammaLuma01 } from './masked-ssim.js';
+import { objectMask, otsuThreshold, maskedSsim, cellMeanLuma01 } from './masked-ssim.js';
 import type { Atlas, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,9 @@ const CHAFA = join(ROOT, 'tools', 'chafa', 'chafa');
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';
 const FONT_SIZE = 16;
 const COLS = 120;
-const IMAGES = ['sphere', 'torus', 'spheres'];
+// default = the 3 synthetic renders; override with --images a,b,c (e.g. to add the
+// Khronos zoo screenshots). The listed names resolve to bench/images/<name>.png.
+let IMAGES = ['sphere', 'torus', 'spheres'];
 
 type Space = 'linear' | 'gamma';
 
@@ -101,6 +104,7 @@ interface ImgCtx {
 
 async function buildContexts(atlas: Atlas, symbols: string): Promise<ImgCtx[]> {
   const { cellW, cellH } = atlas;
+  const tmp = await mkdtemp(join(tmpdir(), 'chafa-gate-'));
   const ctxs: ImgCtx[] = [];
   for (const name of IMAGES) {
     const imgPath = join(ROOT, 'bench', 'images', `${name}.png`);
@@ -108,15 +112,25 @@ async function buildContexts(atlas: Atlas, symbols: string): Promise<ImgCtx[]> {
     const rows = Math.round(COLS * (src.h / src.w) * (cellW / cellH));
     const gridImg = resampleArea(src, COLS * cellW, rows * cellH);
 
-    const builtinGrid = parseAnsiToGrid(runChafa(imgPath, symbols, COLS, rows, cellW, cellH), cellW, cellH, atlas.fontPath);
-    const dejavuGrid = parseAnsiToGrid(runChafa(imgPath, symbols, COLS, rows, cellW, cellH, FONT), cellW, cellH, atlas.fontPath);
+    // Protocol fairness (correction): chafa must optimize the SAME pixels ours fits and
+    // every contestant is graded on — the grid-footprint reference, NOT the 512px
+    // original. Feeding chafa the original biased the margin in our favor (ours fit the
+    // exact graded array while chafa fit a different, higher-res image). Save gridImg to
+    // a temp PNG and hand THAT to chafa.
+    const gridPngPath = join(tmp, `${name}-gridfoot.png`);
+    await savePng(gridImg, gridPngPath);
+
+    const builtinGrid = parseAnsiToGrid(runChafa(gridPngPath, symbols, COLS, rows, cellW, cellH), cellW, cellH, atlas.fontPath);
+    const dejavuGrid = parseAnsiToGrid(runChafa(gridPngPath, symbols, COLS, rows, cellW, cellH, FONT), cellW, cellH, atlas.fontPath);
     const builtin = bestChafa(builtinGrid, atlas, src);
     const dejavu = bestChafa(dejavuGrid, atlas, src);
 
     // object mask from the reference at the grid footprint (Otsu threshold, documented).
-    // The grid-footprint reference IS gridImg (same exact linear area-resample).
+    // The grid-footprint reference IS gridImg (same exact linear area-resample). The Otsu
+    // split is derived from the per-CELL-mean histogram — the same statistic objectMask
+    // thresholds (consistency fix; diagnostic only).
     const refFoot = gridImg;
-    const glOtsu = otsuThreshold(gammaLuma01(refFoot));
+    const glOtsu = otsuThreshold(cellMeanLuma01(refFoot, cellW, cellH));
     const { mask, objFrac } = objectMask(refFoot, cellW, cellH, glOtsu);
 
     ctxs.push({ name, src, gridImg, refFoot, builtinGrid, dejavuGrid, builtin, dejavu, mask, objFrac, otsu: glOtsu });
@@ -266,8 +280,10 @@ async function main(): Promise<void> {
       'gate-tau': { type: 'string' },
       quality: { type: 'string', default: '3' },
       'edge-lambda': { type: 'string' },
+      images: { type: 'string' },
     },
   });
+  if (values.images) IMAGES = values.images.split(',').map((s) => s.trim()).filter(Boolean);
 
   const version = execFileSync(CHAFA, ['--version']).toString('utf8').split('\n')[0];
   console.log(`chafa: ${version}`);

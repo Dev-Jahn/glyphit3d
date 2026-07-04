@@ -134,6 +134,74 @@ How this went from red to green, in order:
    would trade a real robustness property for a benchmark number, so it is
    **not shipped**.
 
+5. **Adversarial-review corrections — input fairness + gate semantics → still
+   PASS.** A later adversarial review found the +0.0003 margin was partly an
+   artifact of an **unfair input**: ours fit the exact grid-footprint array it was
+   graded on, while chafa was handed the 512px original — the two engines were
+   optimizing *different pixels*. **Protocol correction:** the grid-footprint
+   reference (`gridImg`, the same linear area-resample ours fits and `ssim()`
+   grades against) is now saved to a temp PNG and fed to **both** chafa variants,
+   so every contestant optimizes the pixels it is scored on. chafa's invocation
+   flags are otherwise unchanged. Three correctness fixes landed in the same pass:
+   (a) the contrast gate now thresholds the **full per-channel** patch AC energy
+   `E_AC = Σ_c(STT_c − ST_c²/P)` per DESIGN §3.4, not luma-only AC — luma-only
+   flattened isoluminant chroma structure to a muddy mean; (b) a `resampleArea`
+   out-of-bounds read (float-rounding overrun of the last row/column) that put NaN
+   in the bottom-right pixel of some grid footprints; (c) the masked-SSIM Otsu
+   threshold is now derived from the per-cell-mean histogram it is actually applied
+   to (diagnostic only). The gate-semantics change gates marginally **fewer** cells
+   (chroma structure luma missed now survives the gate):
+
+   | image | old luma-gate gated % | new per-channel gated % | Δ (pp) |
+   |---|---|---|---|
+   | sphere | 93.0 | 92.1 | −0.9 |
+   | torus | 92.6 | 92.2 | −0.4 |
+   | spheres | 93.7 | 92.7 | −1.0 |
+   | DamagedHelmet | 45.5 | 45.0 | −0.6 |
+   | FlightHelmet | 85.9 | 85.3 | −0.6 |
+   | BoomBox | 67.1 | 65.9 | −1.1 |
+
+#### Corrected-protocol verdict — 3 synthetic renders
+
+chafa now fed the identical grid-footprint reference. Ours = Q3 `space 'gamma'`,
+spec-default options (unchanged).
+
+| image | ours Q3 (gamma) | chafa builtin (best raster) | chafa DejaVu (best raster) |
+|---|---|---|---|
+| sphere | 0.9802 | 0.9832 (linear) | 0.9830 (linear) |
+| torus | 0.9814 | 0.9821 (gamma) | 0.9820 (gamma) |
+| spheres | 0.9827 | 0.9783 (linear) | 0.9779 (linear) |
+| **mean** | **0.9814** | **0.9812** | **0.9810** |
+
+**Verdict: PASS**, ours − chafa best = **+0.0002**. The fairness fix lifted chafa
+(0.9809 → 0.9812; it now fits the graded pixels) and the gate-semantics fix lifted
+ours (0.9812 → 0.9814); the net honest margin narrows to **+0.0002** but stays
+green. This is a thinner, fairer margin than the pre-correction +0.0003.
+
+#### Corrected-protocol verdict — 6 images (3 synthetic + 3 Khronos zoo)
+
+Adds the DESIGN §10 Khronos screenshot renders (DamagedHelmet, FlightHelmet,
+BoomBox), fetched reproducibly by `scripts/fetch-bench-images.ts` (gitignored
+`bench/images/`). The 3 smooth synthetic renders are the *least* favorable domain
+for the continuous-coverage thesis; the textured Khronos renders are where the
+margin widens.
+
+| image | ours Q3 (gamma) | chafa builtin (best raster) | chafa DejaVu (best raster) |
+|---|---|---|---|
+| sphere | 0.9802 | 0.9832 (linear) | 0.9830 (linear) |
+| torus | 0.9814 | 0.9821 (gamma) | 0.9820 (gamma) |
+| spheres | 0.9827 | 0.9783 (linear) | 0.9779 (linear) |
+| DamagedHelmet | 0.8651 | 0.8603 (gamma) | 0.8568 (gamma) |
+| FlightHelmet | 0.9710 | 0.9697 (gamma) | 0.9691 (gamma) |
+| BoomBox | 0.9277 | 0.9251 (gamma) | 0.9218 (gamma) |
+| **mean** | **0.9513** | **0.9498** | **0.9484** |
+
+**Verdict: PASS**, ours − chafa best = **+0.0015**. Ours wins every Khronos image
+(DamagedHelmet +0.0048, FlightHelmet +0.0013, BoomBox +0.0026): the
+continuous-coverage margin is *larger* on textured/edge-dense content than on the
+smooth synthetic renders. Reproduce with
+`npx tsx bench/chafa-gate.ts --images sphere,torus,spheres,DamagedHelmet,FlightHelmet,BoomBox`.
+
 #### Full experiment matrix
 
 chafa reference (constant across runs) = per-image `max(builtin, DejaVu)` × best

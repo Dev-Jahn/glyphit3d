@@ -59,6 +59,20 @@ describe('resampleArea', () => {
     const out = resampleArea(img, 2, 2);
     expect(energy(out)).toBeCloseTo(energy(img), 6);
   });
+
+  it('does not read out of bounds on a float-rounding overrun pair (512→210, no NaN)', () => {
+    // 512px area-resampled to 210 (== a 512px image at --cols 21, cellW 10): the last
+    // output pixel's inEnd lands at 512.0000000000001, so pre-fix Math.ceil(inEnd)-1
+    // read column/row 512 (one past the end) → NaN in the bottom-right pixel. The clamp
+    // to img.w-1 / img.h-1 fixes both the horizontal and vertical pass; hitting both
+    // needs a 512×512 source. Assert no NaN anywhere + energy (mean) preserved.
+    const img = makeImage(512, 512, (x, y, c) => Math.sin(x * 0.11 + y * 0.07 + c) * 0.4 + 0.5);
+    const out = resampleArea(img, 210, 210);
+    expect(out.w).toBe(210);
+    expect(out.h).toBe(210);
+    for (let i = 0; i < out.data.length; i++) expect(Number.isNaN(out.data[i]!)).toBe(false);
+    expect(energy(out)).toBeCloseTo(energy(img), 4);
+  });
 });
 
 describe('gradients', () => {
