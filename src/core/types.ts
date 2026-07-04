@@ -24,6 +24,7 @@ export interface Grid { cols: number; rows: number; cells: GridCell[]; cellW: nu
 export type ColorMode = 'mono' | 'fg' | 'fg-bg'
 export interface MatchOptions {
   quality: 0 | 1 | 2 | 3 | 4;   // Q0..Q4 (DESIGN §6). quality implies colorMode: Q1=mono, Q2=fg, Q3/Q4=fg-bg
+  space?: 'linear' | 'gamma';  // working space for fit/selection (DESIGN §3.1). default 'gamma' (predict-terminal); 'linear' = bake (opt-in)
   edgeLambda: number;          // λ_e, only used at Q4. default 0.35
   gateTau: number;             // contrast gate threshold on E_AC per pixel (linear luma). default 2e-4
   mdlLambda: number;           // ink complexity penalty weight. default 0.02

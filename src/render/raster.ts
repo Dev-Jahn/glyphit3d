@@ -9,8 +9,23 @@ function toLinear(c: [number, number, number] | null): [number, number, number] 
   return [srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2])];
 }
 
-// Golden-metric renderer (DESIGN §10): bake pred = α·F + (1−α)·B per pixel, linear RGB.
-export function rasterizeGrid(grid: Grid, atlas: Atlas): LinearImage {
+// null fg/bg → sRGB u8 black [0,0,0].
+function toU8(c: [number, number, number] | null): [number, number, number] {
+  return c ?? [0, 0, 0];
+}
+
+function clampU8(v: number): number {
+  const r = Math.round(v);
+  return r < 0 ? 0 : r > 255 ? 255 : r;
+}
+
+// Bake a grid to a LinearImage container. `mode`:
+//  - 'linear' (default, DESIGN §10 golden metric): pred = α·F + (1−α)·B composited
+//    in linear light (colors decoded sRGB→linear first).
+//  - 'gamma' (predict-terminal, §3.1): composite in the ENCODED sRGB space the way a
+//    terminal blends glyph AA, quantize to the 8-bit framebuffer, then decode back to
+//    linear so the container stays consistent (ssim() encodes internally — no double-encode).
+export function rasterizeGrid(grid: Grid, atlas: Atlas, mode: 'linear' | 'gamma' = 'linear'): LinearImage {
   const cellW = atlas.cellW;
   const cellH = atlas.cellH;
   const w = grid.cols * cellW;
@@ -25,6 +40,23 @@ export function rasterizeGrid(grid: Grid, atlas: Atlas): LinearImage {
       const cell = grid.cells[r * grid.cols + c];
       if (!cell) continue;
       const alpha = map.get(cell.ch)?.alpha;
+      if (mode === 'gamma') {
+        const [fr, fg, fb] = toU8(cell.fg);
+        const [br, bg, bb] = toU8(cell.bg);
+        for (let py = 0; py < cellH; py++) {
+          for (let px = 0; px < cellW; px++) {
+            const a = alpha ? alpha[py * cellW + px]! : 0;
+            const ia = 1 - a;
+            const x = c * cellW + px;
+            const y = r * cellH + py;
+            const idx = (y * w + x) * 3;
+            data[idx] = srgbToLinear(clampU8(a * fr + ia * br));
+            data[idx + 1] = srgbToLinear(clampU8(a * fg + ia * bg));
+            data[idx + 2] = srgbToLinear(clampU8(a * fb + ia * bb));
+          }
+        }
+        continue;
+      }
       const [fr, fg, fb] = toLinear(cell.fg);
       const [br, bg, bb] = toLinear(cell.bg);
       for (let py = 0; py < cellH; py++) {

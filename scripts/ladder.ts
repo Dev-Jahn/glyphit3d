@@ -17,9 +17,13 @@ const FONT_SIZE = 16;
 const IMAGES = ['sphere', 'torus', 'spheres'];
 const LABELH = 26;
 
-function runQuality(ref: LinearImage, atlas: Atlas, q: 0 | 1 | 2 | 3 | 4): Grid {
+// Returns the grid AND the space it must be rasterized in (fit space == composite
+// space, always paired). Q0 rampGrid always bakes linear-encoded colors and ignores
+// opts.space, so it is rasterized in linear; Q1..Q4 pair with the fit space.
+function runQuality(ref: LinearImage, atlas: Atlas, q: 0 | 1 | 2 | 3 | 4): { grid: Grid; space: 'linear' | 'gamma' } {
   const opts = defaultOptions(q);
-  return q === 0 ? rampGrid(ref, atlas, opts) : matchGrid(ref, atlas, opts);
+  if (q === 0) return { grid: rampGrid(ref, atlas, opts), space: 'linear' };
+  return { grid: matchGrid(ref, atlas, opts), space: opts.space ?? 'gamma' };
 }
 
 // Blit a LinearImage (sRGB-encoded) into an ImageData region and place it.
@@ -56,9 +60,9 @@ async function main(): Promise<void> {
 
     for (let q = 0 as 0 | 1 | 2 | 3 | 4; q <= 4; q = (q + 1) as 0 | 1 | 2 | 3 | 4) {
       const t0 = performance.now();
-      const grid = runQuality(ref, atlas, q);
+      const { grid, space } = runQuality(ref, atlas, q);
       localTimings.push(performance.now() - t0);
-      const out = rasterizeGrid(grid, atlas);
+      const out = rasterizeGrid(grid, atlas, space);
       scores.push(ssim(out, ref));
       panels.push(out);
       labels.push(`Q${q}`);

@@ -6,13 +6,15 @@ import { linearToSrgb } from './color.js';
 
 function clamp01(x: number): number { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
+// linear working value → sRGB u8.
 function toU8(v: number): number {
   const s = Math.round(linearToSrgb(v));
   return s < 0 ? 0 : s > 255 ? 255 : s;
 }
 
-function srgb(rgb: ArrayLike<number>): [number, number, number] {
-  return [toU8(rgb[0]!), toU8(rgb[1]!), toU8(rgb[2]!)];
+// gamma working value (already sRGB-encoded [0,1]) → u8 directly (no re-encode).
+function gammaU8(v: number): number {
+  return Math.round(clamp01(v) * 255);
 }
 
 // Per-channel residual for the current fit mode. Q3/Q4 refit via fitBox whenever
@@ -57,7 +59,23 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   const { cellW, cellH, P, glyphs } = atlas;
   const cols = Math.floor(img.w / cellW);
   const rows = Math.floor(img.h / cellH);
-  const { dx, dy } = gradients(img);
+  const space = opts.space ?? 'gamma';
+
+  // gamma / predict-terminal mode (DESIGN §3.1): after the (correctly linear) area
+  // resample, encode the working image to gamma floats [0,1] BEFORE gradients/stats;
+  // the closed forms are space-agnostic so the whole fit runs unchanged, and output
+  // colors are the gamma floats mapped straight to u8 (no second encode).
+  let work = img;
+  if (space === 'gamma') {
+    const g = new Float32Array(img.data.length);
+    for (let i = 0; i < g.length; i++) g[i] = linearToSrgb(img.data[i]!) / 255;
+    work = { w: img.w, h: img.h, data: g };
+  }
+  const encode = space === 'gamma'
+    ? (rgb: ArrayLike<number>): [number, number, number] => [gammaU8(rgb[0]!), gammaU8(rgb[1]!), gammaU8(rgb[2]!)]
+    : (rgb: ArrayLike<number>): [number, number, number] => [toU8(rgb[0]!), toU8(rgb[1]!), toU8(rgb[2]!)];
+
+  const { dx, dy } = gradients(work);
   const quality = opts.quality;
   const isQ4 = quality === 4;
   const lam2 = opts.edgeLambda * opts.edgeLambda;
@@ -71,7 +89,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
 
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
-      const cs = cellStats(img, dx, dy, cellW, cellH, col, row);
+      const cs = cellStats(work, dx, dy, cellW, cellH, col, row);
       const T = cs.T, dxT = cs.dxT, dyT = cs.dyT;
       const ST = cs.ST, STT = cs.STT, minT = cs.minT, maxT = cs.maxT, gradTT = cs.gradTT;
       const cellIdx = row * cols + col;
@@ -79,9 +97,9 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       // 1. contrast gate BEFORE the scan
       if (cs.EacLuma / P < opts.gateTau) {
         const mean: [number, number, number] = [ST[0]! / P, ST[1]! / P, ST[2]! / P];
-        if (quality === 1) cells[cellIdx] = { ch: ' ', fg: srgb(ffg), bg: srgb(fbg) };
-        else if (quality === 2) cells[cellIdx] = { ch: ' ', fg: srgb(mean), bg: srgb(fbg) };
-        else cells[cellIdx] = { ch: ' ', fg: null, bg: srgb(mean) };
+        if (quality === 1) cells[cellIdx] = { ch: ' ', fg: encode(ffg), bg: encode(fbg) };
+        else if (quality === 2) cells[cellIdx] = { ch: ' ', fg: encode(mean), bg: encode(fbg) };
+        else cells[cellIdx] = { ch: ' ', fg: null, bg: encode(mean) };
         continue;
       }
 
@@ -141,9 +159,9 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         B[c] = fb[1];
       }
 
-      if (quality === 1) cells[cellIdx] = { ch: g.ch, fg: srgb(ffg), bg: srgb(fbg) };
-      else if (quality === 2) cells[cellIdx] = { ch: g.ch, fg: srgb(F), bg: srgb(fbg) };
-      else cells[cellIdx] = { ch: g.ch, fg: srgb(F), bg: srgb(B) };
+      if (quality === 1) cells[cellIdx] = { ch: g.ch, fg: encode(ffg), bg: encode(fbg) };
+      else if (quality === 2) cells[cellIdx] = { ch: g.ch, fg: encode(F), bg: encode(fbg) };
+      else cells[cellIdx] = { ch: g.ch, fg: encode(F), bg: encode(B) };
     }
   }
 

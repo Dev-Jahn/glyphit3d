@@ -124,9 +124,65 @@ describe('matchGrid', () => {
     });
     const fixedBg: [number, number, number] = [0.1, 0.1, 0.1];
     const expBg = Math.round(255 * (1.055 * Math.pow(0.1, 1 / 2.4) - 0.055));
-    const grid = matchGrid(img, atlas, defaults({ quality: 2, fixedBg }));
+    const grid = matchGrid(img, atlas, defaults({ quality: 2, fixedBg, space: 'linear' }));
     for (const cell of grid.cells) {
       expect(cell.bg).toEqual([expBg, expBg, expBg]);
+    }
+  });
+});
+
+describe('matchGrid gamma working space (predict-terminal, DESIGN §3.1)', () => {
+  let atlas: Atlas;
+  beforeAll(async () => {
+    atlas = await buildAtlas(FONT, 16, 'blocks');
+  }, 60000);
+
+  it('reconstructs the exact half-block cell in gamma space (mirrors the linear match test)', () => {
+    const half = Math.floor(atlas.cellH / 2);
+    // pure white/black is transfer-invariant, so gamma mode must still pick the half-block.
+    const img = makeImage(atlas, 2, (col, _lx, ly) => {
+      const topWhite = col === 0 ? ly < half : ly >= half;
+      const v = topWhite ? 1 : 0;
+      return [v, v, v];
+    });
+    const grid = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma' }));
+    const left = grid.cells[0]!;
+    expect(['▀', '▄']).toContain(left.ch);
+    expect(left.fg).not.toBeNull();
+    expect(left.bg).not.toBeNull();
+    const sse = cellSSE(atlas, left.ch, left.fg!, left.bg!, img, 0);
+    expect(sse / (atlas.P * 3)).toBeLessThan(0.02);
+  });
+
+  it('round-trips gamma fit colors to u8 without re-encoding (no double sRGB pass)', () => {
+    // A top/bottom split at gamma u8 200 / 20. In gamma mode the fit colors are the
+    // working (already-encoded) values, so u8 = round(x·255) must recover ~200 / ~20.
+    // A double-encode bug (linearToSrgb applied again) would yield ~229 / ~79 instead.
+    const half = Math.floor(atlas.cellH / 2);
+    const top = srgbToLinear(200), bot = srgbToLinear(20);
+    const img = makeImage(atlas, 1, (_col, _lx, ly) => {
+      const v = ly < half ? top : bot;
+      return [v, v, v];
+    });
+    const cell = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma' })).cells[0]!;
+    expect(['▀', '▄']).toContain(cell.ch);
+    // colors are one of {~200} and {~20} (order depends on whether ▀ or ▄ won).
+    const hi = Math.max(cell.fg![0], cell.bg![0]);
+    const lo = Math.min(cell.fg![0], cell.bg![0]);
+    expect(Math.abs(hi - 200)).toBeLessThanOrEqual(6);
+    expect(Math.abs(lo - 20)).toBeLessThanOrEqual(6);
+  });
+
+  it('gated flat cell re-encodes its working-space mean straight to the source u8', () => {
+    // Uniform gamma u8 128 → gate fires → bg = round(mean·255) = 128 (not 188 as a
+    // double-encode would give).
+    const v = srgbToLinear(128);
+    const img = makeImage(atlas, 2, () => [v, v, v]);
+    const grid = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma' }));
+    for (const cell of grid.cells) {
+      expect(cell.ch).toBe(' ');
+      expect(cell.fg).toBeNull();
+      for (const c of cell.bg!) expect(Math.abs(c - 128)).toBeLessThanOrEqual(1);
     }
   });
 });

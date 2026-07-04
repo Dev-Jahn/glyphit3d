@@ -17,6 +17,7 @@ import { cellDiffHeatmap } from './metric/heatmap.js';
 export function defaultOptions(quality: 0 | 1 | 2 | 3 | 4): MatchOptions {
   return {
     quality,
+    space: 'gamma',
     edgeLambda: 0.35,
     gateTau: 2e-4,
     mdlLambda: 0.02,
@@ -36,6 +37,7 @@ async function main(): Promise<void> {
     options: {
       cols: { type: 'string', default: '120' },
       quality: { type: 'string', default: '3' },
+      space: { type: 'string', default: 'gamma' },
       charset: { type: 'string', default: 'blocks' },
       font: { type: 'string', default: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf' },
       'font-size': { type: 'string', default: '16' },
@@ -48,12 +50,13 @@ async function main(): Promise<void> {
   });
 
   if (positionals[0] !== 'image' || !positionals[1]) {
-    console.error('usage: cli image <input.png> --cols N --quality 0..4 --charset <set> --font <ttf> --font-size N [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const input = positionals[1];
   const cols = parseInt(values.cols!, 10);
   const quality = parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4;
+  const space = values.space === 'gamma' ? 'gamma' : 'linear';
   const charset = values.charset as keyof typeof CHARSETS;
   const fontSize = parseInt(values['font-size']!, 10);
 
@@ -64,12 +67,16 @@ async function main(): Promise<void> {
 
   const t0 = performance.now();
   const opts = defaultOptions(quality);
+  opts.space = space;
   const grid = quality === 0 ? rampGrid(ref, atlas, opts) : matchGrid(ref, atlas, opts);
   const elapsed = performance.now() - t0;
 
   if (values.o) await writeFile(values.o, toAnsi(grid));
   if (values.html) await writeFile(values.html, toHtml(grid));
-  const out = rasterizeGrid(grid, atlas);
+  // raster space MUST equal the fit space. Q0 rampGrid always bakes linear-encoded
+  // colors (ignores opts.space), so it is always rasterized in linear.
+  const rasterSpace = quality === 0 ? 'linear' : space;
+  const out = rasterizeGrid(grid, atlas, rasterSpace);
   if (values.png) await savePng(out, values.png);
   if (values.diff) await savePng(cellDiffHeatmap(ref, out, grid), values.diff);
   if (!values.o && !values.html) process.stdout.write(toAnsi(grid));
