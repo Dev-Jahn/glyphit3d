@@ -124,6 +124,8 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       const T = cs.T, dxT = cs.dxT, dyT = cs.dyT;
       const ST = cs.ST, STT = cs.STT, minT = cs.minT, maxT = cs.maxT, gradTT = cs.gradTT;
       const cellIdx = row * cols + col;
+      const x0 = col * cellW;
+      const y0 = row * cellH;
 
       // Patch AC energy E_AC = Σ_c (STT_c − ST_c²/P) — the full per-channel AC energy
       // (DESIGN §3.4). Used BOTH for the contrast gate and the MDL penalty scale.
@@ -135,7 +137,22 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       // 1. contrast gate BEFORE the scan. Gate on full per-channel E_AC (working space),
       // not luma-only: luma-only flattens isoluminant chroma structure to a muddy mean.
       if (eacScale / (3 * P) < opts.gateTau) {
-        const mean: [number, number, number] = [ST[0]! / P, ST[1]! / P, ST[2]! / P];
+        let mr = ST[0]! / P, mg = ST[1]! / P, mb = ST[2]! / P; // shaded working-space mean
+        // Stylization (§4.1): a gated cell is a flat surface or background — recolor it
+        // from the ALBEDO patch mean (working space) so it too carries the material color,
+        // not the shaded mean. Colors only; the cell stays gated (ch=' '). Visual-only.
+        if (styleAlbedo) {
+          let ar = 0, ag = 0, ab = 0;
+          for (let ly = 0; ly < cellH; ly++) {
+            const gy = y0 + ly;
+            for (let lx = 0; lx < cellW; lx++) {
+              const p = (gy * img.w + (x0 + lx)) * 3;
+              ar += albData![p]!; ag += albData![p + 1]!; ab += albData![p + 2]!;
+            }
+          }
+          mr = ar / P; mg = ag / P; mb = ab / P;
+        }
+        const mean: [number, number, number] = [mr, mg, mb];
         if (quality === 1) cells[cellIdx] = { ch: ' ', fg: encode(ffg), bg: encode(fbg) };
         else if (quality === 2) cells[cellIdx] = { ch: ' ', fg: encode(mean), bg: encode(fbg) };
         else cells[cellIdx] = { ch: ' ', fg: null, bg: encode(mean) };
@@ -144,8 +161,6 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
 
       // M1 per-cell AOV patch stats (same grid geometry as cellStats). Only run
       // when the corresponding feature is on, so the M0 path is untouched.
-      const x0 = col * cellW;
-      const y0 = row * cellH;
       let SL = 0, SLL = 0; // shading-luma patch DC/AC accumulators (§4.1)
       if (Lpatch) {
         for (let ly = 0; ly < cellH; ly++) {

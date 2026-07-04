@@ -50,6 +50,33 @@ function collectMeshes(root: THREE.Object3D): THREE.Mesh[] {
   return out;
 }
 
+// Mask AOVs (coverage/objectid) must honor KHR alphaMode:MASK cutouts, else masked
+// geometry (e.g. Sponza foliage) renders SOLID in the mask passes while shaded/albedo
+// honor the cutout. Copy the source alphaTest + alpha source (map/alphaMap) so the same
+// fragments discard, then force the fragment RGB back to the flat mask color AFTER the
+// texture multiply: the meshbasic chunk order is map → color → alphamap → alphatest, and
+// map samples tint rgb AND scale alpha, so we keep the scaled alpha for the discard but
+// overwrite rgb with the `diffuse` uniform (the flat color) just before alphatest. This
+// keeps coverage flat white and the objectid R byte EXACT for opaque pixels (verified by
+// sanityCheck's round-trip probe: G/B-leak=0, ids integral). Applied ONLY when the source
+// actually cuts out (alphaTest>0), so opaque meshes render bit-identically to the plain
+// flat-color override (no map sampling, no shader patch).
+function applyMask(mat: THREE.MeshBasicMaterial, o: any): THREE.MeshBasicMaterial {
+  if (o && o.alphaTest > 0 && (o.map || o.alphaMap)) {
+    mat.alphaTest = o.alphaTest;
+    if (o.map) mat.map = o.map;
+    if (o.alphaMap) mat.alphaMap = o.alphaMap;
+    if (o.side != null) mat.side = o.side;
+    mat.onBeforeCompile = (shader: any) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <alphatest_fragment>',
+        'diffuseColor.rgb = diffuse;\n\t#include <alphatest_fragment>',
+      );
+    };
+  }
+  return mat;
+}
+
 function frameCamera(scene: THREE.Object3D, aspect: number): THREE.PerspectiveCamera {
   const box = new THREE.Box3().setFromObject(scene);
   const sphere = new THREE.Sphere();
@@ -111,7 +138,7 @@ function renderPNG(scene: THREE.Scene, cam: THREE.Camera): string {
 
 async function bake(modelUrl: string, opts: BakeOpts): Promise<{
   shaded: string; shading: string; albedo: string; objectid: string; coverage: string;
-  meta: { camera: { yaw: number; pitch: number; dist: number }; meshCount: number };
+  meta: { camera: { yaw: number; pitch: number; dist: number }; meshCount: number; idOverflow: boolean };
 }> {
   const gridW = opts.cols * opts.cellW;
   const gridH = opts.rows * opts.cellH;
@@ -159,30 +186,35 @@ async function bake(modelUrl: string, opts: BakeOpts): Promise<{
   const albedo = renderPNG(scene, cam);
   restore();
 
-  // --- coverage: geometry white on black, unlit
+  // --- coverage: geometry white on black, unlit (honors alpha cutouts, §applyMask)
   scene.background = null;
   renderer.setClearColor(0x000000, 1);
-  setOverride(() => new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  setOverride((m) => applyMask(new THREE.MeshBasicMaterial({ color: 0xffffff }), firstMat(m)));
   const coverage = renderPNG(scene, cam);
   restore();
 
   // --- objectid: per-mesh flat id in R, G=B=0, DATA (no color management)
   THREE.ColorManagement.enabled = false;
   renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-  setOverride((_m, i) => {
+  setOverride((m, i) => {
     const mat = new THREE.MeshBasicMaterial();
     mat.color.setRGB((i + 1) / 255, 0, 0); // CM off → raw byte
-    return mat;
+    return applyMask(mat, firstMat(m)); // keeps R byte exact; only masks cutout fragments
   });
   const objectid = renderPNG(scene, cam);
   restore();
   THREE.ColorManagement.enabled = true;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
+  // §4.2: id = traversal index+1 encoded in the R byte. Index > 254 (>255 meshes) makes
+  // ids ≥256 clamp/collide — flag it (no encoding change at M1). Reported via meta.
+  const idOverflow = meshes.length > 255;
+  if (idOverflow) console.warn(`objectid overflow: ${meshes.length} meshes; traversal index exceeds 254 → ids >255 collide in the R byte.`);
+
   const ud = (cam as any).userData;
   return {
     shaded, shading, albedo, objectid, coverage,
-    meta: { camera: { yaw: YAW_DEG, pitch: PITCH_DEG, dist: ud.dist }, meshCount: meshes.length },
+    meta: { camera: { yaw: YAW_DEG, pitch: PITCH_DEG, dist: ud.dist }, meshCount: meshes.length, idOverflow },
   };
 }
 

@@ -80,7 +80,10 @@ async function bakeCmd(): Promise<void> {
     aovDir = join('bench', 'aov', name);
     const here = fileURLToPath(new URL('.', import.meta.url));
     const driver = join(here, '..', 'scripts', 'bake-aov.ts');
-    const r = spawnSync('npx', ['tsx', driver, target, '--cols', String(cols), '--out', aovDir], { stdio: 'inherit' });
+    // forward --font/--font-size so bake-aov's footprint matches this atlas (else the
+    // AOV gridW×gridH is not a multiple of the cell and the multiple check below errors).
+    const r = spawnSync('npx', ['tsx', driver, target, '--cols', String(cols), '--out', aovDir,
+      '--font', values.font!, '--font-size', String(fontSize)], { stdio: 'inherit' });
     if (r.status !== 0) { console.error(`bake-aov failed for ${target}`); process.exit(1); }
   }
   const req = (f: string) => {

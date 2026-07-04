@@ -28,6 +28,28 @@ const ETA = 0.5;
 const GUARD = 0.002; // regression guard: feature-on overall SSIM ≥ base − 0.002
 const SPACE: 'gamma' = 'gamma';
 
+// --quality N (default 3): fit/color mode for the whole ablation. Q3=fg-bg (M1 default),
+// Q2=fg-only (fixed bg) — the constrained regime where selection priors have room to
+// improve even photometric metrics. Behavior is bit-identical to before when omitted.
+function parseQuality(): 0 | 1 | 2 | 3 | 4 {
+  const i = process.argv.indexOf('--quality');
+  if (i < 0) return 3;
+  const q = Number(process.argv[i + 1]);
+  if (![0, 1, 2, 3, 4].includes(q)) throw new Error(`--quality must be 0..4, got ${process.argv[i + 1]}`);
+  return q as 0 | 1 | 2 | 3 | 4;
+}
+const QUALITY = parseQuality();
+const MODE = QUALITY === 1 ? 'mono' : QUALITY === 2 ? 'fg' : 'fg-bg';
+function parseKappa(): number | null {
+  const i = process.argv.indexOf('--kappa');
+  if (i < 0) return null;
+  const k = Number(process.argv[i + 1]);
+  if (!Number.isFinite(k) || k < 0) throw new Error(`--kappa must be ≥ 0, got ${process.argv[i + 1]}`);
+  return k;
+}
+const PINNED_K = parseKappa();
+const QTAG = `${QUALITY === 3 ? '' : `-q${QUALITY}`}${PINNED_K != null ? `-k${PINNED_K}` : ''}`; // non-default quality/κ → suffixed outputs (preserve Q3 ablate.md)
+
 interface Meta { model: string; cols: number; rows: number; cellW: number; cellH: number; gridW: number; gridH: number }
 
 interface Bundle {
@@ -43,19 +65,52 @@ interface Bundle {
 
 function opts(over: Partial<MatchOptions>): MatchOptions {
   return {
-    quality: 3, space: SPACE, edgeLambda: 0.35, gateTau: 2e-4, mdlLambda: 0.02,
+    quality: QUALITY, space: SPACE, edgeLambda: 0.35, gateTau: 2e-4, mdlLambda: 0.02,
     fixedBg: [0, 0, 0], fixedFg: [1, 1, 1], ...over,
   };
 }
 
+// Per-cell contrast-gate flag in the working space, mirroring src/core/match.ts's gate:
+// a cell is gated when Σ_c(STT_c − ST_c²/P)/(3P) < gateTau. Gated cells fall back to a flat
+// fill BEFORE the glyph scan, so a §4.2 selection prior (which acts inside the scan) can
+// never touch them — they must be excluded from the boundary-cell metric mask.
+const GATE_TAU = 2e-4; // = opts().gateTau
+function gateFiredMask(ref: LinearImage, cellW: number, cellH: number): Uint8Array {
+  const { w, h, data } = ref;
+  const work = new Float32Array(data.length); // SPACE='gamma': encode linear → sRGB [0,1] as match.ts does
+  for (let i = 0; i < work.length; i++) work[i] = linearToSrgb(data[i]!) / 255;
+  const cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
+  const P = cellW * cellH;
+  const flag = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let s0 = 0, s1 = 0, s2 = 0, q0 = 0, q1 = 0, q2 = 0;
+      for (let ly = 0; ly < cellH; ly++) {
+        const gy = r * cellH + ly;
+        for (let lx = 0; lx < cellW; lx++) {
+          const p = (gy * w + (c * cellW + lx)) * 3;
+          const v0 = work[p]!, v1 = work[p + 1]!, v2 = work[p + 2]!;
+          s0 += v0; s1 += v1; s2 += v2; q0 += v0 * v0; q1 += v1 * v1; q2 += v2 * v2;
+        }
+      }
+      const eac = (q0 - (s0 * s0) / P) + (q1 - (s1 * s1) / P) + (q2 - (s2 * s2) / P);
+      flag[r * cols + c] = eac / (3 * P) < GATE_TAU ? 1 : 0;
+    }
+  }
+  return flag;
+}
+
 // §4.2 boundary detection (mirrors src/core/match.ts): majority id A, second id B over
-// covered pixels (id≠0); a cell is boundary if B-fraction ≥ 15%. Returns a pixel mask.
-function boundaryMaskOf(objectId: Uint16Array, w: number, h: number, cellW: number, cellH: number): { mask: Uint8Array; cells: number } {
+// covered pixels (id≠0); a cell is boundary if B-fraction ≥ 15%. Gate-fired cells are
+// excluded (gate runs BEFORE the scan in match.ts), so the metric only counts cells the
+// prior can act on. Returns a pixel mask.
+function boundaryMaskOf(objectId: Uint16Array, w: number, h: number, cellW: number, cellH: number, gateFired: Uint8Array): { mask: Uint8Array; cells: number } {
   const cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
   const cellFlag = new Uint8Array(cols * rows);
   let cells = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
+      if (gateFired[r * cols + c]) continue; // gate-then-boundary order (match.ts)
       const counts = new Map<number, number>();
       let covered = 0;
       for (let ly = 0; ly < cellH; ly++) {
@@ -125,7 +180,8 @@ async function loadBundle(name: string): Promise<Bundle> {
   const coverage = (await loadRaw(join(dir, 'coverage.png'))).data;
   const { w, h } = ref;
   const objMask = objMaskOf(coverage, w, h, meta.cellW, meta.cellH);
-  const bm = boundaryMaskOf(objectId, w, h, meta.cellW, meta.cellH);
+  const gateFired = gateFiredMask(ref, meta.cellW, meta.cellH);
+  const bm = boundaryMaskOf(objectId, w, h, meta.cellW, meta.cellH, gateFired);
   return { name, meta, ref, shadingLuma, objectId, objMask, boundaryMask: bm.mask, boundaryCells: bm.cells };
 }
 
@@ -199,9 +255,14 @@ async function main(): Promise<void> {
   }
   const candidates = KAPPAS.filter((k) => guardOk.get(k));
   const pool = candidates.length ? candidates : KAPPAS;
-  const chosenK = pool.reduce((bestK, k) =>
+  const autoK = pool.reduce((bestK, k) =>
     (meanBoundaryDelta.get(k)! > meanBoundaryDelta.get(bestK)! ? k : bestK), pool[0]!);
-  const choiceNote = candidates.length
+  // --kappa V (default off): pin the 4-run κ instead of auto-choosing, so the ablation
+  // can be reported at a task-specified κ. When omitted, auto-choice is byte-identical.
+  const chosenK = PINNED_K ?? autoK;
+  const choiceNote = PINNED_K != null
+    ? `κ PINNED via --kappa to ${chosenK} (auto-choice would have picked κ=${autoK}; guard passes: ${guardOk.get(chosenK) ?? 'κ not in sweep'})`
+    : candidates.length
     ? `guard-passing κ = {${candidates.join(', ')}}; chose κ=${chosenK} (max mean boundary-cell Δ = ${d(meanBoundaryDelta.get(chosenK)!)} over ${withBoundary.length} multi-mesh model(s): ${withBoundary.join(', ')})`
     : `NO κ passed the regression guard on all models; fell back to max mean boundary-cell Δ → κ=${chosenK}`;
   console.log(`  κ choice: ${choiceNote}`);
@@ -220,8 +281,8 @@ async function main(): Promise<void> {
     });
     // side-by-side: reference | base | +split | +antibleed | +both
     const strip = composeH([b.ref, rBase.out, rSplit.out, rAnti.out, rBoth.out]);
-    await savePng(strip, join(OUT, `ablate-${b.name}.png`));
-    console.log(`  ablated ${b.name} -> ablate-${b.name}.png`);
+    await savePng(strip, join(OUT, `ablate${QTAG}-${b.name}.png`));
+    console.log(`  ablated ${b.name} -> ablate${QTAG}-${b.name}.png`);
   }
 
   // markdown --------------------------------------------------------------------
@@ -229,7 +290,7 @@ async function main(): Promise<void> {
   L.push('# M1 AOV ablation (M1-SPEC §4)');
   L.push('');
   L.push(`- atlas: DejaVu Sans Mono @16, blocks charset, ${atlas.glyphs.length} glyphs, cell ${atlas.cellW}x${atlas.cellH}`);
-  L.push(`- working space: ${SPACE}; quality: Q3 (fg-bg); split η=${ETA}; κ sweep {${KAPPAS.join(', ')}}`);
+  L.push(`- working space: ${SPACE}; quality: Q${QUALITY} (${MODE}); split η=${ETA}; κ sweep {${KAPPAS.join(', ')}}`);
   L.push(`- reference: each model's shaded AOV (already at grid footprint ${bundles[0]!.meta.gridW}×${bundles[0]!.meta.gridH}); overall = golden SSIM, object-cell = coverage>0.3 masked SSIM, boundary-cell = §4.2 masked SSIM`);
   L.push('');
   L.push('## Per-model geometry');
@@ -331,13 +392,13 @@ async function main(): Promise<void> {
   L.push('');
   L.push('Panel order per strip: **reference | base | +split | +antibleed | +both**.');
   L.push('');
-  for (const b of bundles) L.push(`- ![${b.name}](ablate-${b.name}.png)`);
+  for (const b of bundles) L.push(`- ![${b.name}](ablate${QTAG}-${b.name}.png)`);
   L.push('');
 
   const md = L.join('\n');
-  await writeFile(join(OUT, 'ablate.md'), md);
+  await writeFile(join(OUT, `ablate${QTAG}.md`), md);
   console.log('\n' + md);
-  console.log(`\nwrote ${join(OUT, 'ablate.md')}`);
+  console.log(`\nwrote ${join(OUT, `ablate${QTAG}.md`)}`);
 }
 
 function countCells(mask: Uint8Array, meta: Meta): number {

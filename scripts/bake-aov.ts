@@ -116,16 +116,20 @@ async function runSmoke(): Promise<void> {
 interface Meta {
   model: string; cols: number; rows: number; cellW: number; cellH: number;
   gridW: number; gridH: number; camera: { yaw: number; pitch: number; dist: number }; threeVersion: string;
+  idOverflow: boolean;
 }
 
-async function runBake(model: string, cols: number, outDir: string | undefined): Promise<void> {
+async function runBake(model: string, cols: number, outDir: string | undefined, font: string, fontSize: number): Promise<void> {
   const modelPath = resolve(model);
   if (!existsSync(modelPath)) throw new Error(`model not found: ${modelPath}`);
   const name = basename(model).replace(/\.(gltf|glb)$/i, '');
   const out = outDir ? resolve(outDir) : join(ROOT, 'bench', 'aov', name);
   await mkdir(out, { recursive: true });
 
-  const atlas = await buildAtlas(FONT, 16, 'ascii');
+  // Footprint = cell metrics of the CONSUMING atlas. Must match src/cli.ts's --font/
+  // --font-size, else the baked gridW×gridH is not a multiple of the atlas cell and the
+  // bake subcommand hard-errors. cli forwards both; bake-aov defaults to the same values.
+  const atlas = await buildAtlas(font, fontSize, 'ascii');
   const { cellW, cellH } = atlas;
   const rows = Math.max(1, Math.round((cols * cellW) / cellH)); // ~square pixel canvas
   const gridW = cols * cellW;
@@ -146,11 +150,12 @@ async function runBake(model: string, cols: number, outDir: string | undefined):
     }
     const meta: Meta = {
       model: name, cols, rows, cellW, cellH, gridW, gridH,
-      camera: result.meta.camera, threeVersion,
+      camera: result.meta.camera, threeVersion, idOverflow: !!result.meta.idOverflow,
     };
     await writeFile(join(out, 'meta.json'), JSON.stringify(meta, null, 2));
 
     console.log(`baked ${name}: ${gridW}x${gridH} (${cols}x${rows}), meshes=${result.meta.meshCount} -> ${out}`);
+    if (meta.idOverflow) console.warn(`  WARN: idOverflow — ${result.meta.meshCount} meshes exceed the 254 max traversal index; objectid ids >255 collide.`);
     await sanityCheck(out, result);
   } finally {
     server.close();
@@ -195,17 +200,19 @@ async function main(): Promise<void> {
     options: {
       cols: { type: 'string', default: '120' },
       out: { type: 'string' },
+      font: { type: 'string', default: FONT },
+      'font-size': { type: 'string', default: '16' },
       smoke: { type: 'boolean', default: false },
     },
   });
   if (values.smoke) { await runSmoke(); return; }
   const model = positionals[0];
   if (!model) {
-    console.error('usage: tsx scripts/bake-aov.ts <model.glb|.gltf> --cols 120 [--out dir]');
+    console.error('usage: tsx scripts/bake-aov.ts <model.glb|.gltf> --cols 120 [--out dir] [--font ttf] [--font-size N]');
     console.error('       tsx scripts/bake-aov.ts --smoke');
     process.exit(2);
   }
-  await runBake(model, parseInt(values.cols!, 10), values.out);
+  await runBake(model, parseInt(values.cols!, 10), values.out, values.font!, parseInt(values['font-size']!, 10));
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
