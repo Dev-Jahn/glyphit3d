@@ -22,6 +22,21 @@ export async function loadLinear(path: string): Promise<LinearImage> {
   return { w, h, data };
 }
 
+// PNG → raw u8 (R channel only), NO sRGB decode. For objectid / coverage AOVs
+// where pixel values are data (mesh id / mask), not color with a transfer curve.
+export async function loadRaw(path: string): Promise<{ w: number; h: number; data: Uint8Array }> {
+  const src = await loadImage(path);
+  const w = src.width;
+  const h = src.height;
+  const canvas = createCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(src, 0, 0, w, h);
+  const rgba = ctx.getImageData(0, 0, w, h).data;
+  const data = new Uint8Array(w * h);
+  for (let p = 0, q = 0; p < rgba.length; p += 4, q++) data[q] = rgba[p]!;
+  return { w, h, data };
+}
+
 // Exact area (box) resampling in linear space. Each output pixel is the
 // overlap-area-weighted mean of the input pixels its footprint covers, so the
 // operation is separable and energy-preserving. Downscale is the required case;

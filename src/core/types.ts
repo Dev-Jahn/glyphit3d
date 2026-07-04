@@ -30,4 +30,14 @@ export interface MatchOptions {
   mdlLambda: number;           // ink complexity penalty weight. default 0.02
   fixedBg: [number, number, number]; // linear RGB, for mono/fg modes and Q0. default [0,0,0]
   fixedFg: [number, number, number]; // linear RGB, for mono mode. default [1,1,1]
+
+  // M1 AOV score-priors (all optional, all default off → M0 behavior unchanged; M1-SPEC §3).
+  aov?: {
+    shadingLuma?: Float32Array;  // gridW*gridH, WORKING-space luma of the albedo-free shading render (§4.1)
+    objectId?: Uint16Array;      // gridW*gridH, per-mesh id, 0 = background (§4.2)
+    albedo?: LinearImage;        // linear RGB, for the stylization variant only
+  };
+  splitSelection?: number;     // η ≥ 0, default 0 (off). §4.1 fidelity variant: extra shading-luma scoring channel.
+  antibleedKappa?: number;     // κ ≥ 0, default 0 (off). §4.2 boundary-cell object-id correlation bonus.
+  styleAlbedoColors?: boolean; // default false. §4.1 stylization variant: refit selected glyph colors on albedo.
 }

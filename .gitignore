@@ -4,3 +4,5 @@ out/
 *.tsbuildinfo
 tools/
 bench/images/
+bench/aov/
+bench/zoo/
