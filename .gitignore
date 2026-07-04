@@ -1,0 +1,6 @@
+node_modules/
+bench/out/
+out/
+*.tsbuildinfo
+tools/
+bench/images/
