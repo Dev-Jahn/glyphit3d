@@ -26,8 +26,9 @@ Config: DejaVu Sans Mono @ 16px, `blocks` charset, 120 columns (rows derived fro
 each image's aspect and the 10×19 cell → 63 rows for the 512×512 benchmarks).
 
 - **ours** — `matchGrid(..., Q3)` with **spec-default** `MatchOptions`
-  (`edgeLambda 0.35`, `gateTau 2e-4`, `mdlLambda 0.02`, `fixedBg [0,0,0]`,
-  `fixedFg [1,1,1]`). No tuning: Q3 is run exactly as the ladder/CLI run it.
+  (`space 'gamma'` — predict-terminal, the project default; `edgeLambda 0.35`,
+  `gateTau 2e-4`, `mdlLambda 0.02`, `fixedBg [0,0,0]`, `fixedFg [1,1,1]`). No
+  tuning: Q3 is run exactly as the ladder/CLI run it.
 - **chafa builtin** — `chafa -w 9 --fill none --symbols <set> --colors full
   --size 120x63 --font-ratio 10/19 -f symbols img.png`, using chafa's own
   internal glyph coverage model.
@@ -89,43 +90,107 @@ pixel aspect as our 10×19 cell (fair geometry, matching our renderer).
 
 chafa: Chafa version 1.18.2 · atlas: 270 glyphs, cell 10×19 · grid 120×63
 
-| image   | ours Q3 | chafa builtin | chafa DejaVu |
-|---------|---------|---------------|--------------|
-| sphere  | 0.9784  | 0.9830        | 0.9828       |
-| torus   | 0.9807  | 0.9816        | 0.9816       |
-| spheres | 0.9803  | 0.9780        | 0.9776       |
-| **mean**| **0.9798** | **0.9809**  | **0.9807**   |
+| image   | ours Q3 (gamma) | chafa builtin | chafa DejaVu |
+|---------|-----------------|---------------|--------------|
+| sphere  | 0.9799          | 0.9830        | 0.9828       |
+| torus   | 0.9813          | 0.9818        | 0.9817       |
+| spheres | 0.9824          | 0.9780        | 0.9776       |
+| **mean**| **0.9812**      | **0.9809**    | **0.9807**   |
 
 chafa best variant: **builtin glyphs**, mean SSIM **0.9809**.
-Ours mean SSIM **0.9798**.
+Ours (Q3, `space 'gamma'` predict-terminal — the project default) mean SSIM
+**0.9812**.
 
-### Verdict: **FAIL** (ours − chafa best = −0.0011)
+### Verdict: **PASS** (ours − chafa best = +0.0003)
 
-Our M0 Q3 narrowly trails chafa's best variant at M0: we win `spheres`
-(+0.0023) but lose `sphere` (−0.0046) and `torus` (−0.0009). The two chafa
-variants are within 0.0002 of each other (builtin ≈ DejaVu), so the builtin/real-
-glyph distinction is not the deciding factor.
+How this went from red to green, in order:
 
-This is an **honest, un-tuned** result: Q3 is run with spec-default options. The
-gap is *not* rigged away — the golden rule here is fairness and correctness, not
-forcing a green light. Two contributors to the gap, both legitimate M0 behavior:
+1. **Initial run — FAIL, −0.0011.** The first honest, un-tuned run used the old
+   `linear` bake default (Q3, spec-default options): ours **0.9798** vs chafa
+   best **0.9809**. We won `spheres` (+0.0023) but lost `sphere` (−0.0046) and
+   `torus` (−0.0009). Nothing was tuned to rig it green — the golden rule is
+   fairness, not a forced green light.
 
-- On these images 92–96% of cells are near-black background that our contrast
-  gate (`gateTau`) correctly blanks to a flat `bg=mean` cell — identical in
-  spirit to what chafa does on flat regions. The SSIM difference lives entirely
-  in the ~5–8% of cells covering the lit object.
-- The MDL ink penalty (`mdlLambda`) biases us toward simpler glyphs on
-  high-AC-energy object cells; chafa has no such complexity prior. This is a Q3
-  regularizer we tune later, not at M0.
+2. **Root cause — loss-space vs metric-space mismatch.** The gate metric
+   `ssim()` scores in **gamma-encoded** luma (what the eye and a real terminal
+   see), but the fit was minimising SSE in **linear** light. The per-cell
+   least-squares optimum in linear light is not the optimum a gamma-space SSIM
+   rewards. A **masked-SSIM** localization (object vs background via a per-image
+   Otsu split) confirmed *where* the loss lived: the background half of the gap
+   was the linear-vs-gamma compositing of glyph anti-aliasing — precisely the
+   predict-terminal discrepancy of DESIGN §3.1 (most terminals blend glyph AA in
+   gamma space, "wrongly").
+
+3. **Fix — predict-terminal `gamma` mode → PASS, +0.0003, defaults intact.**
+   Fitting *and* compositing in the same gamma-encoded space the terminal
+   actually blends in (DESIGN §3.1) lifts ours to **0.9812** with **no other knob
+   touched** (`gateTau 2e-4`, `mdlLambda 0.02`, `edgeLambda 0.35` all unchanged).
+   This is now the project-wide default; `--space linear` remains for the bake
+   path (PNG/HTML). Fit space and composite space are always paired.
+
+4. **Rejected — `gateTau 0` (+0.0030).** Disabling the contrast gate scores
+   higher still (run C below, **0.9840**), but the gate is the washout /
+   degenerate-fit defense (DESIGN §3.4). Turning it off to win the benchmark
+   would trade a real robustness property for a benchmark number, so it is
+   **not shipped**.
+
+#### Full experiment matrix
+
+chafa reference (constant across runs) = per-image `max(builtin, DejaVu)` × best
+raster; mean **0.9809** is the gate target.
+
+| run | quality | space | gateTau | edgeLambda | sphere | torus | spheres | mean | Δ vs chafa | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A (baseline re-run) | Q3 | linear | 0.0002 | — | 0.9784 | 0.9807 | 0.9803 | **0.9798** | -0.0011 | FAIL |
+| B | Q3 | gamma | 0.0002 | — | 0.9799 | 0.9813 | 0.9824 | **0.9812** | +0.0003 | PASS |
+| C | Q3 | gamma | 0 | — | 0.9841 | 0.9828 | 0.9850 | **0.9840** | +0.0030 | PASS |
+| D | Q3 | linear | 0 | — | 0.9839 | 0.9823 | 0.9848 | **0.9837** | +0.0027 | PASS |
+| E1 | Q4 | gamma | 0.0002 | 0.2 | 0.9799 | 0.9813 | 0.9824 | **0.9812** | +0.0003 | PASS |
+| E2 | Q4 | gamma | 0.0002 | 0.35 | 0.9799 | 0.9813 | 0.9824 | **0.9812** | +0.0003 | PASS |
+| E3 | Q4 | gamma | 0.0002 | 0.7 | 0.9799 | 0.9812 | 0.9824 | **0.9812** | +0.0002 | PASS |
+
+Run **B** is the shipped default. Runs C/D confirm the gate, not the space, is
+what most `mean` SSIM is left on the table by — but see §3.4: that number is not
+free.
+
+#### Masked-SSIM localization (object vs background)
+
+Object mask = reference gamma-luma per-cell mean > Otsu threshold (per image),
+dilated one cell so silhouette cells count as object. The spec's literal τ≈0.06
+is degenerate here (marks 100% of these bright-gradient backgrounds as object),
+so a data-driven Otsu split is used and reported:
+
+| image | Otsu τ (gamma) | object-cell fraction |
+|---|---|---|
+| sphere | 0.424 | 39.8% |
+| torus | 0.447 | 14.7% |
+| spheres | 0.388 | 37.1% |
+
+| target | region | sphere | torus | spheres | mean |
+|---|---|---|---|---|---|
+| ours Q3 linear (A) | object | 0.9685 | 0.8863 | 0.9604 | 0.9384 |
+| ours Q3 linear (A) | background | 0.9851 | 0.9973 | 0.9923 | 0.9916 |
+| ours Q3 gamma (B) | object | 0.9671 | 0.8874 | 0.9620 | 0.9388 |
+| ours Q3 gamma (B) | background | 0.9886 | 0.9978 | 0.9948 | 0.9938 |
+| chafa builtin | object | 0.9732 | 0.8906 | 0.9654 | 0.9431 |
+| chafa builtin | background | 0.9896 | 0.9979 | 0.9856 | 0.9910 |
+
+(Matrix + masked tables mirror `bench/out/gate-matrix.md`, which is gitignored;
+regenerate with `npx tsx bench/chafa-gate.ts --matrix`.)
 
 ## Honest scope note (spec §9)
 
-This gate validates **only the 2D continuous-coverage least-squares margin**
-(DESIGN §10). It says nothing about the eventual 3D pipeline. It shows that on
-flat 2D shaded renders, our M0 optimizer is already *within ~0.1% SSIM* of a
-mature, heavily-optimized reference tool (chafa 1.18.2) under a scrupulously
-fair, identical-repertoire, identical-renderer comparison — a strong M0 baseline,
-narrowly short of the hard gate pending Q3/Q4 λ tuning.
+**(a) What this validates.** Only the **2D continuous-coverage least-squares
+margin** (DESIGN §10). It says nothing about the eventual 3D pipeline. On flat 2D
+shaded renders our M0 optimizer now edges a mature, heavily-optimized reference
+tool (chafa 1.18.2) under a scrupulously fair, identical-repertoire,
+identical-renderer comparison — a genuine, if narrow, M0 win.
+
+**(b) Known open gap — object/lit cells.** The masked-SSIM table shows the PASS
+comes entirely from the **background** (ours gamma **0.9938** vs chafa **0.9910**);
+on **object** cells chafa still leads by **~0.004–0.005** mean (0.9431 vs
+~0.9385), and *neither* the gamma fix nor `gateTau 0` moves that number. This is
+recorded as an **open problem** (DESIGN §15), **not tuned away**.
 
 ## Files
 

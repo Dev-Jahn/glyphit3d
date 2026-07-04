@@ -711,6 +711,10 @@ glyph-aware 적응 path tracing(§4.7), lighting 최적화(§4.8), SGR attribute
 6. coverage 중심 기반의 싼 admissible prune이 존재하는가 — 검증에서 기존
    주장은 기각됨(엄밀한 형태는 S_αT 자체를 요구). 새 유도가 없으면 휴리스틱
    이상을 주장하지 말 것.
+7. object/lit 셀 피팅 갭 vs chafa (~0.004 SSIM, masked-SSIM으로 국소화됨) —
+   후보 원인: 셀당 2색 제약이 specular highlight에서 포화, 실루엣 셀의
+   gate/MDL 상호작용; M1의 3D-aware 기능(albedo/shading 분리 §4.1)이 자연히
+   개선하는지 먼저 관찰 후 별도 대응 결정.
 
 ---
 
