@@ -1,4 +1,5 @@
 import type { Atlas, Glyph } from '../../src/core/types.js';
+import { sha256Hex } from './sha256.js';
 
 // Serialized font profile (M2-SPEC §1, DESIGN §5.4). `alphaB64` is base64 of
 // Uint8Array(round(α·255)); u8 quantization is fine because atlas α already comes
@@ -118,8 +119,7 @@ export async function verifyProfileHash(profile: Profile): Promise<void> {
     payload.set(covers[i]!, off);
     off += covers[i]!.length;
   }
-  const digest = await crypto.subtle.digest('SHA-256', payload);
-  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const hex = sha256Hex(payload);
   if (hex !== profile.profileHash) {
     throw new Error(`profile hash mismatch: computed ${hex} != declared ${profile.profileHash}`);
   }
