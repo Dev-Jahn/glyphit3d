@@ -38,16 +38,19 @@
 | 학술: Xu/Zhang/Wong SIGGRAPH 2010 | alignment-insensitive shape similarity로 **선화** ASCII (단색, 변형 허용) | 톤/색 없음 |
 | 학술: Nakano et al. 2014 (IEEE) | GPU에서 per-cell 전수 glyph 탐색 (~57× CPU 대비) | 2D 이미지 입력, 구형 GPU, 단색 |
 
-추가로 존재가 보고된 것(**미검증** — 착수 전 반드시 실물 확인): **GlyphCSS**
-(3D→ASCII 브라우저 컴포넌트로 보고됨), **mayz/ascii-renderer**("shape-based
-ASCII with color" 표방). 아래 novelty 주장 #1은 이 확인이 끝나기 전까지 조건부다.
+인접 경쟁자 실물 확인 완료 (2026-07-05): **GlyphCSS** = OBJ/glTF/GLB 폴리곤
+메시를 monospace `<pre>` 그리드에 투영하는 **폴리곤 rasterizer** (per-cell
+glyph shape 매칭·색 최적화 없음). **mayz/ascii-renderer** = **2D 이미지 전용**,
+문자당 6-D shape vector의 nearest 매칭 (joint LS 아님, 3D 아님). 즉 GlyphCSS는
+"3D→글자 그리드"를, mayz는 "shape 매칭"을 각각 갖지만 **교차점(3D + per-cell
+glyph+색 LS 최적화)은 비어 있다** — 이것이 포지셔닝 한 줄이다.
 
 ### 1.1 그래서 진짜 novelty는 무엇인가 (방어 가능성 순)
 
 1. **3D G-buffer 구동 매칭** — 조사한 범위에서, depth/normal/object-id/albedo
-   **분리 버퍼가 glyph 선택에 개입**하는 변환기는 발견되지 않았다 (단,
-   GlyphCSS/mayz 실물 확인 전까지 조건부 주장). 실루엣과 텍스처 에지를 구분할
-   수 있는 것은 3D 파이프라인뿐. **가장 강한 novelty 후보.**
+   **분리 버퍼가 glyph 선택에 개입**하는 변환기는 발견되지 않았다 (GlyphCSS/
+   mayz 실물 확인 완료 — 위 참조, 주장 유지 확정). 실루엣과 텍스처 에지를
+   구분할 수 있는 것은 3D 파이프라인뿐. **가장 강한 novelty 후보.**
 2. **연속 coverage 폰트 프로파일 atlas + 진짜 alpha-composite LS** — Chafa의
    "1-bit 마스크 + 그룹 평균"을 "연속 α + 닫힌 형태 회귀"로 상향. 품질 상한을
    측정 가능하게 올리는 지점. 프레이밍은 반드시 *"continuous-coverage LS vs
