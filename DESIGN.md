@@ -740,6 +740,14 @@ glyph-aware 적응 path tracing(§4.7), lighting 최적화(§4.8), SGR attribute
    개선하는지 먼저 관찰 후 별도 대응 결정.
    - M1 실측: **3D selection prior로는 닫히지 않음**이 확인됨(§3.3 일반화, docs/M1-RESULTS.md).
      남은 후보는 fit/atlas 측 — charset 확대(braille), multi-scale loss, atlas AA 정합.
+   - M2 병행 실측: **charset 확대도 무효** — DejaVu는 braille glyph가 0개(preset이 blocks와
+     동일)이고, full(+Latin-1 94자)은 전 이미지 SSIM이 4자리까지 동결된 채 비용만 1.25×.
+     추가 국소화: Khronos 텍스처 렌더에선 우리가 object 셀 +0.0063 리드 — 잔여 갭은
+     **매끈한 합성 렌더의 물체 내부**에 산다. 차기 가설: contrast gate가 저대비 내부
+     그라디언트 셀을 평탄화하는 비용 (M0의 gateTau=0 +0.0030과 정합) → gate를 "AC 임계
+     prefilter"에서 "flat-fill SSE vs best-glyph SSE 직접 비교"로 교체 검토(M3), washout
+     방어는 MDL이 담당. 별개: braille은 폰트 커버리지와 무관하게 터미널 자체 합성(§5.6)
+     이상 마스크로 predict-terminal 모드에 도입 가능.
 
 ---
 

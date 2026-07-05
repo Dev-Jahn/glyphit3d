@@ -6,9 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { dirname, join } from 'node:path';
 import { buildAtlas } from '../src/atlas/atlas.js';
-import { loadLinear, resampleArea } from '../src/image/image.js';
+import { CHARSETS } from '../src/atlas/charsets.js';
+import { resampleArea } from '../src/image/image.js';
+import { loadLinear } from '../src/image/image-io.js';
 import { matchGrid } from '../src/core/match.js';
-import { rasterizeGrid, savePng } from '../src/render/raster.js';
+import { rasterizeGrid } from '../src/render/raster.js';
+import { savePng } from '../src/render/raster-io.js';
 import { ssim } from '../src/metric/ssim.js';
 import { parseAnsiToGrid } from './ansi-parse.js';
 import { objectMask, otsuThreshold, maskedSsim, cellMeanLuma01 } from './masked-ssim.js';
@@ -23,6 +26,9 @@ const COLS = 120;
 // default = the 3 synthetic renders; override with --images a,b,c (e.g. to add the
 // Khronos zoo screenshots). The listed names resolve to bench/images/<name>.png.
 let IMAGES = ['sphere', 'torus', 'spheres'];
+// charset preset fed to buildAtlas; chafa's repertoire is derived from the
+// resulting atlas glyphs, so this flag steers BOTH engines in lockstep.
+let CHARSET: keyof typeof CHARSETS = 'blocks';
 
 type Space = 'linear' | 'gamma';
 
@@ -195,7 +201,7 @@ async function matrix(atlas: Atlas, symbols: string): Promise<void> {
   const L: string[] = [];
   L.push('# Gate matrix — working-space experiment (H2 predict-terminal) + gate sweep');
   L.push('');
-  L.push(`chafa 1.18.2 · DejaVu Sans Mono @ ${FONT_SIZE}px · blocks charset · ${COLS} cols · atlas ${atlas.glyphs.length} glyphs · cell ${atlas.cellW}x${atlas.cellH} · grid ${COLS}x${ctxs[0]!.builtinGrid.rows}`);
+  L.push(`chafa 1.18.2 · DejaVu Sans Mono @ ${FONT_SIZE}px · ${CHARSET} charset · ${COLS} cols · atlas ${atlas.glyphs.length} glyphs · cell ${atlas.cellW}x${atlas.cellH} · grid ${COLS}x${ctxs[0]!.builtinGrid.rows}`);
   L.push('');
   L.push('chafa runs are UNCHANGED; its grid is baked BOTH ways and the better SSIM kept (generous to chafa). Per-image chafa reference = max(builtin, DejaVu) × best raster:');
   L.push('');
@@ -281,13 +287,19 @@ async function main(): Promise<void> {
       quality: { type: 'string', default: '3' },
       'edge-lambda': { type: 'string' },
       images: { type: 'string' },
+      charset: { type: 'string', default: 'blocks' },
     },
   });
   if (values.images) IMAGES = values.images.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!(values.charset! in CHARSETS)) {
+    console.error(`--charset must be one of ${Object.keys(CHARSETS).join('|')}; got '${values.charset}'`);
+    process.exit(2);
+  }
+  CHARSET = values.charset as keyof typeof CHARSETS;
 
   const version = execFileSync(CHAFA, ['--version']).toString('utf8').split('\n')[0];
   console.log(`chafa: ${version}`);
-  const atlas = await buildAtlas(FONT, FONT_SIZE, 'blocks');
+  const atlas = await buildAtlas(FONT, FONT_SIZE, CHARSET);
   const symbols = toSymbolArg(atlas.glyphs.map((g) => g.cp));
 
   if (values.matrix) {
