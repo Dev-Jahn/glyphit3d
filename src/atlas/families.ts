@@ -333,6 +333,7 @@ export interface FamilySolve {
   score: number; // sse + mdlLambda·ink·eacScale — the meta-selection score
   F: [number, number, number];
   B: [number, number, number];
+  sumA: number;  // Σα of the winning pattern (for the post-selection invisibility collapse)
   ch: string;
 }
 
@@ -408,5 +409,5 @@ export function solveFamily(f: Family, ctx: CellFitCtx): FamilySolve {
     B[c] = fb[1];
   }
 
-  return { pattern: bestPat, sse: bestSse, score: bestScore, F, B, ch: f.ch[bestPat]! };
+  return { pattern: bestPat, sse: bestSse, score: bestScore, F, B, sumA: f.sumA[bestPat]!, ch: f.ch[bestPat]! };
 }

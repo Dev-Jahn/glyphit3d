@@ -94,6 +94,43 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       : rgb;
   const ffg = toWork(opts.fixedFg);
   const fbg = toWork(opts.fixedBg);
+
+  // Post-selection invisibility collapse (GATE finding, bench/out/gate-sweep.md). After the
+  // winner (text glyph OR family pattern) is chosen, if its fitted fg/bg are visually
+  // indistinguishable in the OUTPUT encoding — max-channel |F−B| (u8) < collapseThreshold —
+  // replace the cell with space + the winner's coverage-weighted flat mean (sumA·F+(P−sumA)·B)/P
+  // per channel (the exact flat fill matching the chosen prediction's DC). It was proposed to
+  // REPLACE M3's soft MDL washout defense (λ·ink·E_AC), which was falsified — that penalty
+  // scales WITH E_AC and vanishes exactly in the low-energy washout regime, so on washout-stress
+  // 99.35% of near-flat cells still emitted faint invisible-ink glyphs; this exact rule instead
+  // has full leverage at low energy and zeroes the proxy deterministically (0.00% on all bench
+  // images at threshold 24). BUT the "SSIM-neutral by construction" premise was itself FALSIFIED
+  // by measurement: on real gradient interiors the faint glyphs carry sub-cell structure SSIM
+  // rewards, so collapsing them costs overall+object SSIM > 0.0005 at every tested threshold on
+  // every image (and flips the chafa gate PASS→FAIL). Hence the default is OFF (options.ts,
+  // collapseThreshold=0 → byte-identical output); it is an opt-in for washout-dominated inputs.
+  // Q1 (mono, fixed colors) is exempt. Emits mirror the gated-cell convention (Q2: mean in fg,
+  // bg fixed; Q3/Q4: mean in bg, fg null); B is fbg in Q2 (fixed bg), the fitted bg in Q3/Q4.
+  const collapseThreshold = opts.collapseThreshold ?? 0;
+  const emitWinner = (
+    ch: string, F: [number, number, number], B: [number, number, number], sumA: number,
+  ): GridCell => {
+    if (quality === 1) return { ch, fg: encode(ffg), bg: encode(fbg) };
+    const fgEnc = encode(F);
+    const bgEnc = quality === 2 ? encode(fbg) : encode(B);
+    if (collapseThreshold > 0 &&
+        Math.max(Math.abs(fgEnc[0] - bgEnc[0]), Math.abs(fgEnc[1] - bgEnc[1]), Math.abs(fgEnc[2] - bgEnc[2])) < collapseThreshold) {
+      const Bc = quality === 2 ? fbg : B;
+      const mean: [number, number, number] = [
+        (sumA * F[0] + (P - sumA) * Bc[0]) / P,
+        (sumA * F[1] + (P - sumA) * Bc[1]) / P,
+        (sumA * F[2] + (P - sumA) * Bc[2]) / P,
+      ];
+      return quality === 2 ? { ch: ' ', fg: encode(mean), bg: bgEnc } : { ch: ' ', fg: null, bg: encode(mean) };
+    }
+    return { ch, fg: fgEnc, bg: bgEnc };
+  };
+
   const cells: GridCell[] = new Array(cols * rows);
 
   // M1 score-prior extensions (M1-SPEC §3). All default off → the loop below runs
@@ -413,11 +450,10 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         if (famWin && famWin.score >= bestScore) famWin = null; // text scan kept the win
       }
 
-      // 3a. family winner → emit its solved ch + colors directly (colors already fit).
+      // 3a. family winner → emit its solved ch + colors (colors already fit), via the
+      // invisibility collapse (emitWinner). famWin.B is fbg in Q2, the fitted bg in Q3/Q4.
       if (famWin) {
-        if (quality === 1) cells[cellIdx] = { ch: famWin.ch, fg: encode(ffg), bg: encode(fbg) };
-        else if (quality === 2) cells[cellIdx] = { ch: famWin.ch, fg: encode(famWin.F), bg: encode(fbg) };
-        else cells[cellIdx] = { ch: famWin.ch, fg: encode(famWin.F), bg: encode(famWin.B) };
+        cells[cellIdx] = emitWinner(famWin.ch, famWin.F, famWin.B, famWin.sumA);
         continue;
       }
 
@@ -467,9 +503,9 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         }
       }
 
-      if (quality === 1) cells[cellIdx] = { ch: g.ch, fg: encode(ffg), bg: encode(fbg) };
-      else if (quality === 2) cells[cellIdx] = { ch: g.ch, fg: encode(F), bg: encode(fbg) };
-      else cells[cellIdx] = { ch: g.ch, fg: encode(F), bg: encode(B) };
+      // winner → emit via the invisibility collapse (emitWinner). B is fbg in Q2 (channelFB
+      // fixes it), the fitted bg in Q3/Q4; collapseThreshold=0 → byte-identical to pre-collapse.
+      cells[cellIdx] = emitWinner(g.ch, F, B, g.sumA);
     }
   }
 

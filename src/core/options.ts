@@ -16,6 +16,16 @@ export function defaultOptions(quality: 0 | 1 | 2 | 3 | 4): MatchOptions {
     mdlLambda: 0.02,
     fixedBg: [0, 0, 0],
     fixedFg: [1, 1, 1],
+    // Post-selection invisibility collapse (types.ts). Default OFF (0). The collapse zeroes
+    // the invisible-ink proxy deterministically (at threshold 24 every proxy-counted cell,
+    // |F−B|<24, is exactly the set collapsed to space → 0.00% on all 6 images), but the
+    // predicted "zero SSIM cost" was FALSIFIED by measurement (bench/out/gate-sweep.md,
+    // collapse section): the faint glyphs on real gradient interiors carry sub-cell structure
+    // SSIM rewards, so collapsing them costs overall+object SSIM > 0.0005 at every threshold on
+    // every image. Per the decision rule (largest threshold with cost ≤ 0.0005 everywhere), no
+    // threshold qualifies → ship OFF. Available opt-in for washout-dominated inputs where the
+    // faint glyphs are genuinely structureless (there the cost is ~0.001).
+    collapseThreshold: 0,
   };
 }
 

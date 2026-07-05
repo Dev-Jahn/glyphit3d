@@ -345,6 +345,7 @@ async function main(): Promise<void> {
       images: { type: 'string' },
       charset: { type: 'string', default: 'blocks' },
       families: { type: 'boolean', default: false },
+      collapse: { type: 'string' },
     },
   });
   if (values.images) IMAGES = values.images.split(',').map((s) => s.trim()).filter(Boolean);
@@ -384,6 +385,7 @@ async function main(): Promise<void> {
   opts.space = values.space === 'gamma' ? 'gamma' : 'linear';
   if (values['gate-tau'] !== undefined) opts.gateTau = parseFloat(values['gate-tau']);
   if (values['edge-lambda'] !== undefined) opts.edgeLambda = parseFloat(values['edge-lambda']);
+  if (values.collapse !== undefined) opts.collapseThreshold = parseFloat(values.collapse); // post-selection invisibility collapse (0 = off = default)
   await singleRun(atlas, symbols, opts);
 }
 

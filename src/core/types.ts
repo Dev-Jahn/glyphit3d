@@ -37,10 +37,22 @@ export interface MatchOptions {
   quality: 0 | 1 | 2 | 3 | 4;   // Q0..Q4 (DESIGN §6). quality implies colorMode: Q1=mono, Q2=fg, Q3/Q4=fg-bg
   space?: 'linear' | 'gamma';  // working space for fit/selection (DESIGN §3.1). default 'gamma' (predict-terminal); 'linear' = bake (opt-in)
   edgeLambda: number;          // λ_e, only used at Q4. default 0.35
-  gateTau: number;             // contrast gate threshold on full per-channel E_AC = Σ_c(STT_c−ST_c²/P), per pixel-channel (÷3P). The gate statistic lives in the WORKING space (tau calibrated for gamma), NOT linear luma. default 2e-4
+  gateTau: number;             // contrast gate threshold on full per-channel E_AC = Σ_c(STT_c−ST_c²/P), per pixel-channel (÷3P). The gate statistic lives in the WORKING space (tau calibrated for gamma), NOT linear luma. default 2e-5 (options.ts is the SSOT)
   mdlLambda: number;           // ink complexity penalty weight. default 0.02
   fixedBg: [number, number, number]; // linear RGB, for mono/fg modes and Q0. default [0,0,0]
   fixedFg: [number, number, number]; // linear RGB, for mono mode. default [1,1,1]
+
+  // Post-selection invisibility collapse (u8 units; default in options.ts, 0 = off). After the
+  // winner (text glyph OR family pattern) is chosen, if its fitted fg/bg are visually
+  // indistinguishable in the OUTPUT encoding — max-channel |F−B| (u8) < collapseThreshold — the
+  // cell is replaced with space + the winner's coverage-weighted flat mean (sumA·F+(P−sumA)·B)/P
+  // per channel (the exact flat fill matching the chosen prediction's DC). Applied in matchGrid
+  // AFTER selection, before emit; Q1 (mono, fixed colors) exempt. SSIM-neutral by construction
+  // (the replaced prediction was already near-flat) and it zeroes the invisible-ink proxy
+  // deterministically. This REPLACES M3's soft MDL washout defense (λ·ink·E_AC), which was
+  // FALSIFIED (bench/out/gate-sweep.md): that penalty scales WITH E_AC and so vanishes exactly in
+  // the low-energy washout regime; this exact rule has full leverage there.
+  collapseThreshold?: number;
 
   // M1 AOV score-priors (all optional, all default off → M0 behavior unchanged; M1-SPEC §3).
   aov?: {

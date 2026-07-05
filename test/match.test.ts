@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { buildAtlas } from '../src/atlas/atlas.js';
 import { matchGrid } from '../src/core/match.js';
 import { rampGrid } from '../src/core/ramp.js';
+import { buildFamily } from '../src/atlas/families.js';
 import { srgbToLinear } from '../src/core/color.js';
-import type { Atlas, MatchOptions, LinearImage } from '../src/core/types.js';
+import type { Atlas, MatchOptions, LinearImage, Grid } from '../src/core/types.js';
 
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';
 
@@ -244,6 +246,128 @@ describe('matchGrid fixedBg working-space contract (linear-RGB option, space-inv
         expect(cell.bg).toEqual([89, 89, 89]);
       }
     }
+  });
+});
+
+// mulberry32 (must match test/fixtures/regression-grid.json generator EXACTLY)
+function mulberry32(seed: number) {
+  return () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('post-selection invisibility collapse (replaces the falsified MDL washout defense)', () => {
+  let atlas: Atlas;
+  beforeAll(async () => { atlas = await buildAtlas(FONT, 16, 'blocks'); }, 60000);
+
+  // A 12-u8 gamma half-split passes the gate (τ=2e-5) so the scan runs and a half-block
+  // wins, but its fitted fg/bg are only 12 u8 apart — a faint winner. collapseThreshold 16
+  // must replace it with space + the coverage-weighted flat mean (sumA·F+(P−sumA)·B)/P.
+  it('collapses a faint text winner to space with the coverage-weighted-mean bg', () => {
+    const half = Math.floor(atlas.cellH / 2);
+    const top = srgbToLinear(128), bot = srgbToLinear(140);
+    const img = makeImage(atlas, 1, (_c, _lx, ly) => { const v = ly < half ? top : bot; return [v, v, v]; });
+
+    const off = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma', gateTau: 2e-5, collapseThreshold: 0 })).cells[0]!;
+    expect(off.ch).not.toBe(' ');
+    expect(off.fg).not.toBeNull();
+    expect(off.bg).not.toBeNull();
+    const d = Math.max(
+      Math.abs(off.fg![0] - off.bg![0]), Math.abs(off.fg![1] - off.bg![1]), Math.abs(off.fg![2] - off.bg![2]),
+    );
+    expect(d).toBeGreaterThan(0);
+    expect(d).toBeLessThan(16); // faint enough for threshold 16 to catch it
+
+    // weighted mean from the winning glyph's coverage and the OFF winner's fitted colors
+    const g = atlas.glyphs.find((gl) => gl.ch === off.ch)!;
+    const expMean = [0, 1, 2].map((c) => Math.round((g.sumA * off.fg![c]! + (atlas.P - g.sumA) * off.bg![c]!) / atlas.P));
+
+    const on = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma', gateTau: 2e-5, collapseThreshold: 16 })).cells[0]!;
+    expect(on.ch).toBe(' ');
+    expect(on.fg).toBeNull();               // Q3 flat cell convention: bg carries the fill
+    expect(on.bg).not.toBeNull();
+    for (let c = 0; c < 3; c++) expect(Math.abs(on.bg![c]! - expMean[c]!)).toBeLessThanOrEqual(1);
+  });
+
+  // A 20/235 half-split has |F−B| ≈ 214 u8 → far above any tested threshold → untouched.
+  it('leaves a high-contrast winner untouched', () => {
+    const half = Math.floor(atlas.cellH / 2);
+    const img = makeImage(atlas, 1, (_c, _lx, ly) => { const v = ly < half ? srgbToLinear(20) : srgbToLinear(235); return [v, v, v]; });
+    const off = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma', gateTau: 2e-5, collapseThreshold: 0 })).cells[0]!;
+    const on = matchGrid(img, atlas, defaults({ quality: 3, space: 'gamma', gateTau: 2e-5, collapseThreshold: 16 })).cells[0]!;
+    expect(on.ch).not.toBe(' ');
+    expect(on.ch).toBe(off.ch);
+    expect(on.fg).toEqual(off.fg);
+    expect(on.bg).toEqual(off.bg);
+  });
+
+  // Regression guard: collapseThreshold 0 (and absent) must be byte-identical to the frozen
+  // M0 golden grid — the collapse is a strict no-op when off. Reuses the shared fixture.
+  it('collapseThreshold 0 (and absent) reproduces the M0 golden grid byte-for-byte', () => {
+    const golden = JSON.parse(
+      readFileSync(new URL('./fixtures/regression-grid.json', import.meta.url), 'utf8'),
+    ) as { cells: Grid['cells'] };
+    const { cellW, cellH } = atlas;
+    const cols = 6, rows = 3;
+    const w = cols * cellW, h = rows * cellH;
+    const data = new Float32Array(w * h * 3);
+    const rnd = mulberry32(12345);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const cx = x / w, cy = y / h;
+        const r = 0.2 + 0.6 * cx + 0.15 * Math.sin(cy * 6.28) + 0.05 * (rnd() - 0.5);
+        const g = 0.2 + 0.6 * cy + 0.15 * Math.cos(cx * 6.28) + 0.05 * (rnd() - 0.5);
+        const b = 0.5 + 0.3 * Math.sin((cx + cy) * 6.28) + 0.05 * (rnd() - 0.5);
+        const i = (y * w + x) * 3;
+        data[i] = Math.max(0, Math.min(1, r));
+        data[i + 1] = Math.max(0, Math.min(1, g));
+        data[i + 2] = Math.max(0, Math.min(1, b));
+      }
+    }
+    const img: LinearImage = { w, h, data };
+    expect(matchGrid(img, atlas, defaults({ collapseThreshold: 0 })).cells).toEqual(golden.cells);
+    expect(matchGrid(img, atlas, defaults({})).cells).toEqual(golden.cells);
+  });
+
+  // Family-winner collapse path: a low-amplitude braille-lattice cell (dots gamma 145, gaps
+  // 120) → the braille region solve strictly wins (a codepoint NOT in the blocks atlas, so it
+  // can only come from the family solver), yet |F−B| is faint → collapses to space + the
+  // pattern's coverage-weighted mean.
+  it('collapses a faint family (braille) winner to space via the family path', () => {
+    const { cellW, cellH, P } = atlas;
+    const r2 = (0.21 * cellW) ** 2;
+    const cx = [0.25 * cellW, 0.75 * cellW];
+    const cy = [0.125 * cellH, 0.375 * cellH, 0.625 * cellH, 0.875 * cellH];
+    const img = makeImage(atlas, 1, (_c, lx, ly) => {
+      let on = false;
+      for (const X of cx) for (const Y of cy) if ((lx + 0.5 - X) ** 2 + (ly + 0.5 - Y) ** 2 <= r2) on = true;
+      const v = srgbToLinear(on ? 145 : 120);
+      return [v, v, v];
+    });
+    const optsF = (T: number): MatchOptions =>
+      defaults({ quality: 3, space: 'gamma', gateTau: 2e-5, families: ['braille'], collapseThreshold: T });
+
+    const off = matchGrid(img, atlas, optsF(0)).cells[0]!;
+    const cp = off.ch.codePointAt(0)!;
+    expect(cp).toBeGreaterThanOrEqual(0x2800); // braille block ⇒ produced by the family solver
+    expect(cp).toBeLessThanOrEqual(0x28ff);
+    expect(off.fg).not.toBeNull();
+    expect(off.bg).not.toBeNull();
+    const d = Math.max(
+      Math.abs(off.fg![0] - off.bg![0]), Math.abs(off.fg![1] - off.bg![1]), Math.abs(off.fg![2] - off.bg![2]),
+    );
+
+    const fam = buildFamily('braille', cellW, cellH);
+    const sumA = fam.sumA[fam.ch.indexOf(off.ch)]!;
+    const expMean = [0, 1, 2].map((c) => Math.round((sumA * off.fg![c]! + (P - sumA) * off.bg![c]!) / P));
+
+    const on = matchGrid(img, atlas, optsF(d + 4)).cells[0]!; // threshold just above the winner's |F−B|
+    expect(on.ch).toBe(' ');
+    expect(on.fg).toBeNull();
+    for (let c = 0; c < 3; c++) expect(Math.abs(on.bg![c]! - expMean[c]!)).toBeLessThanOrEqual(1);
   });
 });
 
