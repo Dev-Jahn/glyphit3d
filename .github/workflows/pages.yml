@@ -1,0 +1,62 @@
+# Deploys the interactive web demo (web/) to GitHub Pages on every push to main.
+# Inactive until the repository exists and Pages is enabled (Settings → Pages →
+# Source: GitHub Actions). <!-- NAME: no repo-name coupling here; nothing to rename. -->
+name: Deploy web demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege for the Pages deployment via OIDC.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One concurrent deploy; let an in-flight run finish rather than cancelling it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Font profiles are committed under web/public/profiles; regenerate only if
+      # they are missing (export-atlas needs the DejaVu Sans Mono TTF, installed
+      # here only on that path).
+      - name: Generate font profiles if missing
+        run: |
+          if [ ! -f web/public/profiles/dejavu-16-blocks.json ]; then
+            sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+            npx tsx scripts/export-atlas.ts
+          fi
+
+      - name: Build web demo
+        run: npx vite build --config web/vite.config.ts
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

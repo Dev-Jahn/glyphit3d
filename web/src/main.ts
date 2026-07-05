@@ -110,7 +110,7 @@ window.__app = {
 // wiped when the demo layout mounts.
 function showError(msg: string): void {
   console.error(msg);
-  const id = 'ascii3d-error';
+  const id = 'glyphit3d-error';
   let note = document.getElementById(id);
   if (!note) {
     note = document.createElement('div');
@@ -125,7 +125,7 @@ function showError(msg: string): void {
 // profile that fails hash verification). Surface it visibly, but still flip
 // __ready so the UI boots with defaults instead of a permanently blank page.
 void rematch()
-  .catch((e) => { showError(`ascii-3d: initial render failed — ${e instanceof Error ? e.message : String(e)}`); })
+  .catch((e) => { showError(`glyphit3d: initial render failed — ${e instanceof Error ? e.message : String(e)}`); })
   .finally(() => { window.__ready = true; });
 
 // Minimal fragment reader (cols/quality/charset/space/yaw/pitch). The UI owns the

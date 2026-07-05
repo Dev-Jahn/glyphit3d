@@ -69,8 +69,8 @@ export class Exports {
   }
 
   private saveAnsi(): void {
-    downloadBlob(new Blob([toAnsi(this.grid())], { type: 'text/plain' }), 'ascii3d.ans');
-    this.flash('saved ascii3d.ans');
+    downloadBlob(new Blob([toAnsi(this.grid())], { type: 'text/plain' }), 'glyphit3d.ans');
+    this.flash('saved glyphit3d.ans');
   }
 
   private async copyAnsi(): Promise<void> {
@@ -82,8 +82,8 @@ export class Exports {
     return new Promise((resolve, reject) => {
       this.raster.toBlob((blob) => {
         if (!blob) { reject(new Error('png encode failed')); return; }
-        downloadBlob(blob, 'ascii3d.png');
-        this.flash('saved ascii3d.png');
+        downloadBlob(blob, 'glyphit3d.png');
+        this.flash('saved glyphit3d.png');
         resolve();
       }, 'image/png');
     });
@@ -94,7 +94,7 @@ export class Exports {
     const quality = app().getState().params.quality;
     const meta = await profileMeta(charset);
     const json = serializeGrid(this.grid(), meta, quality);
-    downloadBlob(new Blob([JSON.stringify(json)], { type: 'application/json' }), 'ascii3d.json');
-    this.flash('saved ascii3d.json');
+    downloadBlob(new Blob([JSON.stringify(json)], { type: 'application/json' }), 'glyphit3d.json');
+    this.flash('saved glyphit3d.json');
   }
 }

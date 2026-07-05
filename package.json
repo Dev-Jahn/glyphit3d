@@ -1,16 +1,31 @@
 {
-  "name": "ascii3d",
+  "name": "glyphit3d",
   "version": "0.0.1",
-  "description": "glyph-constrained 3D renderer — M0: image→glyph optimizer core",
+  "description": "Glyphit3D — glyph-constrained 3D renderer — 3D G-buffers matched to a continuous-coverage font atlas with closed-form two-color least squares",
   "main": "index.js",
   "scripts": {
     "test": "vitest run",
     "cli": "tsx src/cli.ts",
-    "e2e": "tsx test-e2e/demo.spec.ts"
+    "e2e": "tsx test-e2e/demo.spec.ts",
+    "dev": "vite --config web/vite.config.ts",
+    "build": "vite build --config web/vite.config.ts",
+    "profiles": "tsx scripts/export-atlas.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "ascii",
+    "ansi",
+    "3d",
+    "glyph",
+    "terminal",
+    "renderer",
+    "chafa"
+  ],
+  "author": "Jahn (Dev-Jahn)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dev-Jahn/glyphit3d.git"
+  },
   "type": "module",
   "private": "true",
   "devDependencies": {

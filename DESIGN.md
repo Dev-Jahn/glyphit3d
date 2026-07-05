@@ -724,6 +724,8 @@ glyph-aware 적응 path tracing(§4.7), lighting 최적화(§4.8), SGR attribute
 착수 전 crates.io/npm/GitHub 가용성 확인과 함께 재검증할 것. 바이너리 이름은
 발견성 위해 `ascii3d` 유지 가능.
 
+결정 (2026-07-05): **Glyphit3D** (패키지/repo `glyphit3d`, CLI `glyphit`) — 전 채널 가용성 확인 완료.
+
 ---
 
 ## 15. 오픈 질문

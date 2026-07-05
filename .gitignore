@@ -7,3 +7,4 @@ bench/images/
 bench/aov/
 bench/zoo/
 .playwright-mcp/
+web/dist/

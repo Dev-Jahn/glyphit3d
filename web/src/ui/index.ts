@@ -43,7 +43,7 @@ async function boot(): Promise<void> {
   const root = el('div', { id: 'ui-root' }, [
     el('header', { class: 'top' }, [
       el('div', { class: 'brand' }, [
-        el('b', {}, [document.createTextNode('ascii'), el('span', { text: '·' }), document.createTextNode('3d')]),
+        el('b', {}, [document.createTextNode('glyphit'), el('span', { text: '·' }), document.createTextNode('3d')]),
         el('span', { class: 'tag', text: 'a glyph-constrained 3D renderer — the demo is the proof' }),
       ]),
       el('div', { class: 'match' }, [matchPct, el('span', { class: 'lbl', text: 'perceptual match' })]),
