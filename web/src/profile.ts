@@ -96,10 +96,36 @@ export function decodeProfile(profile: Profile): Atlas {
   };
 }
 
-// Fetch + decode a profile artifact. Works in the worker (self.fetch).
+// Recompute the profileHash the exporter wrote and throw on mismatch. The exporter
+// (scripts/export-atlas.ts atlasToProfile) hashes, in atlas/glyph order, each glyph's
+// cp as UInt32LE followed by its u8 coverage bytes (the same bytes base64'd into
+// alphaB64). Recomputing here over the decoded bytes proves the artifact is intact.
+export async function verifyProfileHash(profile: Profile): Promise<void> {
+  const covers = profile.glyphs.map((g) => decodeAlphaB64(g.alphaB64));
+  const total = covers.reduce((s, c) => s + 4 + c.length, 0);
+  const payload = new Uint8Array(total);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  for (let i = 0; i < profile.glyphs.length; i++) {
+    view.setUint32(off, profile.glyphs[i]!.cp, true); // little-endian, matches writeUInt32LE
+    off += 4;
+    payload.set(covers[i]!, off);
+    off += covers[i]!.length;
+  }
+  const digest = await crypto.subtle.digest('SHA-256', payload);
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  if (hex !== profile.profileHash) {
+    throw new Error(`profile hash mismatch: computed ${hex} != declared ${profile.profileHash}`);
+  }
+}
+
+// Fetch + decode a profile artifact. Works in the worker (self.fetch). The hash is
+// verified before decode so a tampered/corrupt artifact fails loudly rather than
+// silently feeding bad glyph coverage into the matcher.
 export async function loadProfile(url: string): Promise<Atlas> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`profile fetch ${url} failed: ${res.status}`);
   const profile = (await res.json()) as Profile;
+  await verifyProfileHash(profile);
   return decodeProfile(profile);
 }

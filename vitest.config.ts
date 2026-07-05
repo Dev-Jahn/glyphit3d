@@ -1,9 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
-// Scope vitest to the node unit suites under test/. The Playwright E2E script
-// (test-e2e/demo.spec.ts) is a standalone `npm run e2e` runner, NOT a vitest suite
-// (M2-SPEC §4) — vitest's default `**/*.spec.ts` glob would otherwise try to collect
-// it and fail ("no test suite"). All existing suites live under test/.
+// Use vitest's default `include` so co-located suites (e.g. web/src/*.test.ts) are
+// never silently dropped, and only exclude what must not be collected: the Playwright
+// E2E script (test-e2e/demo.spec.ts) is a standalone `npm run e2e` runner, NOT a
+// vitest suite (M2-SPEC §4), and the build/vendor trees have no node unit tests.
 export default defineConfig({
-  test: { include: ['test/**/*.{test,spec}.ts'] },
+  test: { exclude: ['test-e2e/**', 'node_modules/**', 'dist/**', 'web/dist/**'] },
 });

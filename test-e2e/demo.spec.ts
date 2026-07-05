@@ -87,6 +87,54 @@ function repertoire(): string[] {
   return [...s];
 }
 
+// Divider-pane identity + orientation probe. Reads the composited .scrub-canvas and
+// each source (#scene / #raster) scaled to the composite's size, then reports the
+// mean-abs colour diff of the composite vs each source over the top third, bottom
+// third, and full frame, plus the top-band and full-frame diffs against each source
+// flipped vertically. A correctly-composited saturated pane matches its own source
+// near-exactly (identical drawImage), matches the OTHER source poorly, and matches
+// its own source FLIPPED poorly (so a top↔bottom flip is caught).
+//
+// NOTE: kept free of nested named function expressions on purpose — tsx/esbuild
+// injects a `__name(fn,"…")` helper for those, which is undefined in the page and
+// throws "__name is not defined" when Playwright serializes this into the browser.
+function paneStats(): any {
+  const scrub: any = document.querySelector('.scrub-canvas');
+  const w: number = scrub.width, h: number = scrub.height;
+  const sd: any = scrub.getContext('2d').getImageData(0, 0, w, h).data;
+  const sources: any[] = [];
+  for (const sel of ['#scene', '#raster']) {
+    const src: any = document.querySelector(sel);
+    const t: any = document.createElement('canvas'); t.width = w; t.height = h;
+    const x: any = t.getContext('2d'); x.drawImage(src, 0, 0, w, h);
+    sources.push(x.getImageData(0, 0, w, h).data);
+  }
+  const t1 = Math.floor(h / 3), b0 = Math.floor((h * 2) / 3);
+  // [source-index, key, flip, y0, y1] — inline mean-abs-diff to avoid a nested fn.
+  const specs: any[] = [
+    [0, 'sceneTop', false, 0, t1], [0, 'sceneBot', false, b0, h], [0, 'sceneFull', false, 0, h],
+    [0, 'sceneFlipTop', true, 0, t1], [0, 'sceneFlipFull', true, 0, h],
+    [1, 'rasterTop', false, 0, t1], [1, 'rasterBot', false, b0, h], [1, 'rasterFull', false, 0, h],
+    [1, 'rasterFlipTop', true, 0, t1], [1, 'rasterFlipFull', true, 0, h],
+  ];
+  const out: any = { w, h };
+  for (const spec of specs) {
+    const a: any = sources[spec[0]];
+    const flip: boolean = spec[2], y0: number = spec[3], y1: number = spec[4];
+    let sum = 0, n = 0;
+    for (let y = y0; y < y1; y++) {
+      const ay = flip ? h - 1 - y : y;
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4, j = (ay * w + x) * 4;
+        sum += Math.abs(sd[i] - a[j]) + Math.abs(sd[i + 1] - a[j + 1]) + Math.abs(sd[i + 2] - a[j + 2]);
+        n += 3;
+      }
+    }
+    out[spec[1]] = sum / n;
+  }
+  return out;
+}
+
 async function readDownload(page: Page, triggerSelectorText: string): Promise<Buffer> {
   const [dl] = await Promise.all([
     page.waitForEvent('download', { timeout: 30000 }),
@@ -121,7 +169,7 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     return `SSIM Q0=${q0.ssim.toFixed(4)} < Q3=${q3.ssim.toFixed(4)}; badge="${q3.badge}"`;
   });
 
-  await check(3, 'Charset blocks→ascii changes the ANSI glyph repertoire', async () => {
+  await check(3, 'Charset round-trip blocks→ascii→blocks: block glyphs drop then RETURN', async () => {
     // Re-targeted (2026-07-05): the original check switched to 'braille', but DejaVu Sans
     // Mono carries zero braille glyphs, so the braille/full presets are byte-identical to
     // blocks (DESIGN §15.7) — a physically impossible assertion with this font. blocks↔ascii
@@ -137,7 +185,18 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     const blockInAscii = ascii.filter(isBlockGlyph);
     assert.ok(blockInBlocks.length > 0, `blocks repertoire has no U+2500–259F glyph (${blocks.length} glyphs)`);
     assert.equal(blockInAscii.length, 0, `ascii repertoire leaked box/block glyphs: ${blockInAscii.join('')}`);
-    return `blocks ${blocks.length} glyphs (${blockInBlocks.length} in U+2500–259F) → ascii ${ascii.length} glyphs (0 block glyphs)`;
+
+    // Round-trip back to blocks — the regression guard for the worker's stale-atlas
+    // bug (fix 1): re-selecting a previously-used charset must re-match against ITS
+    // atlas, so the box/block glyphs have to RETURN. The old "last Map key" worker
+    // kept matching against the ascii atlas here (Maps preserve first-insertion order)
+    // and produced zero block glyphs.
+    await afterRematch(page, () => page.locator('select.field-input').selectOption('blocks'));
+    const blocks2 = await page.evaluate(repertoire);
+    const blockInBlocks2 = blocks2.filter(isBlockGlyph);
+    assert.ok(blockInBlocks2.length > 0, `round-trip blocks→ascii→blocks did not restore U+2500–259F glyphs (${blocks2.length} glyphs, 0 block) — worker matched a stale atlas`);
+
+    return `blocks ${blocks.length} (${blockInBlocks.length} block) → ascii ${ascii.length} (0 block) → blocks ${blocks2.length} (${blockInBlocks2.length} block restored)`;
   });
 
   await check(4, 'Exports: ANSI (ESC, rows), JSON (§3 shape), PNG (non-empty)', async () => {
@@ -162,6 +221,9 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
       if (c === null) continue;
       assert.ok(typeof c.ch === 'string' && 'fg' in c && 'bg' in c, 'cell entry shape invalid');
     }
+    // The export must carry real glyphs, not an all-null / all-blank grid.
+    const printable = json.cells.some((c: any) => c && typeof c.ch === 'string' && (c.ch.codePointAt(0) ?? 0) > 0x20);
+    assert.ok(printable, 'json export has no non-null printable glyph cell');
 
     const png = await readDownload(page, '.png');
     assert.ok(png.length > 0, 'PNG export empty');
@@ -170,18 +232,64 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     return `.ans ${ans.length}B/${ansRows} rows, .json ${json.cells.length} cells (${json.color.channels}), .png ${png.length}B`;
   });
 
-  await check(5, 'Scrubber divider drag changes the composite', async () => {
+  await check(5, 'Scrubber: drag changes composite; left pane = #scene, right pane = #raster, upright', async () => {
     const box = await page.locator('.scrub-stage').boundingBox();
     assert.ok(box, 'scrub-stage not found');
     const y = box.y + box.height / 2;
+
+    // Saturate the divider fully right (frac→1, whole composite = the LEFT source, the
+    // native #scene render) and fully left (frac→0, whole composite = the RIGHT source,
+    // #raster), reading pane stats at each end. Dragging PAST the stage edge under
+    // pointer-capture pins frac to exactly 1/0 so no sliver of the other source leaks in.
+    // Inlined per side (no nested fn — see paneStats note on the __name helper).
+
+    // (a) dragging the divider changes the composite.
     await page.mouse.move(box.x + box.width * 0.15, y);
     await page.mouse.down();
     const hA = await page.evaluate(canvasHash, '.scrub-canvas');
     await page.mouse.move(box.x + box.width * 0.85, y, { steps: 4 });
     const hB = await page.evaluate(canvasHash, '.scrub-canvas');
-    await page.mouse.up();
     assert.notEqual(hA, hB, `composite unchanged across divider positions (hash ${hA})`);
-    return `divider 15% hash ${hA} ≠ 85% hash ${hB}`;
+
+    // --- Q3 (default): the glyph raster faithfully reproduces the render, so identity
+    // and upright-orientation are checkable with a wide margin, but the two sources
+    // look alike (that fidelity is the demo's whole point).
+    await page.mouse.move(box.x + box.width + 400, y, { steps: 4 }); // frac→1
+    const R3 = await page.evaluate(paneStats);
+    await page.mouse.up();
+    await page.mouse.move(box.x + box.width * 0.5, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x - 400, y, { steps: 4 }); // frac→0
+    const L3 = await page.evaluate(paneStats);
+    await page.mouse.up();
+
+    // identity: each saturated pane is a faithful copy of its OWN source (same drawImage).
+    assert.ok(R3.sceneFull < 4, `fully-right pane ≠ #scene (Δ ${R3.sceneFull.toFixed(1)})`);
+    assert.ok(L3.rasterFull < 4, `fully-left pane ≠ #raster (Δ ${L3.rasterFull.toFixed(1)})`);
+    // orientation: upright beats vertically-flipped by a wide margin — top-light /
+    // bottom-dark background gradient + the asymmetric knot — so a flipped pane fails.
+    assert.ok(R3.sceneFlipFull > R3.sceneFull + 10, `#scene pane vertically flipped (upright ${R3.sceneFull.toFixed(1)} vs flipped ${R3.sceneFlipFull.toFixed(1)})`);
+    assert.ok(L3.rasterFlipFull > L3.rasterFull + 10, `#raster pane vertically flipped (upright ${L3.rasterFull.toFixed(1)} vs flipped ${L3.rasterFlipFull.toFixed(1)})`);
+
+    // --- Q0: its crude mono ramp differs sharply from the render (SSIM ~0.05, check 2),
+    // so the panes become distinguishable and a source SWAP / same-source-both-sides
+    // (invisible at Q3) is caught: self≈0 but the OTHER source is far off.
+    await afterRematch(page, () => page.locator('button.q-btn', { hasText: /^Q0$/ }).click());
+    await page.mouse.move(box.x + box.width * 0.5, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width + 400, y, { steps: 4 }); // frac→1
+    const R0 = await page.evaluate(paneStats);
+    await page.mouse.up();
+    await page.mouse.move(box.x + box.width * 0.5, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x - 400, y, { steps: 4 }); // frac→0
+    const L0 = await page.evaluate(paneStats);
+    await page.mouse.up();
+
+    assert.ok(R0.sceneFull < 4 && R0.rasterFull > R0.sceneFull + 10, `fully-right pane is not the #scene source at Q0 (self ${R0.sceneFull.toFixed(1)} vs other ${R0.rasterFull.toFixed(1)})`);
+    assert.ok(L0.rasterFull < 4 && L0.sceneFull > L0.rasterFull + 10, `fully-left pane is not the #raster source at Q0 (self ${L0.rasterFull.toFixed(1)} vs other ${L0.sceneFull.toFixed(1)})`);
+
+    return `drag ${hA}≠${hB}; Q3 identity scene ${R3.sceneFull.toFixed(1)}/raster ${L3.rasterFull.toFixed(1)}, flip scene ${R3.sceneFlipFull.toFixed(1)}/raster ${L3.rasterFlipFull.toFixed(1)}; Q0 source scene self ${R0.sceneFull.toFixed(1)}·other ${R0.rasterFull.toFixed(1)} / raster self ${L0.rasterFull.toFixed(1)}·other ${L0.sceneFull.toFixed(1)}`;
   });
 
   await check(6, 'Permalink round-trip: settings survive reload', async () => {
@@ -201,11 +309,39 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     return `fragment ${hash} → reload restored {cols:140, quality:1, charset:ascii, space:linear}`;
   });
 
-  await check(7, 'Perf at defaults: match+raster < 500ms', async () => {
+  await check(7, 'Perf at defaults: match+raster < 500ms; main thread stays live during a rematch', async () => {
     assert.ok(perf, 'no default perf captured');
     const interactive = perf.match + perf.raster;
     assert.ok(interactive < 500, `interactive (match+raster) ${interactive.toFixed(1)}ms >= 500ms`);
-    return `render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms · ssim ${perf.ssim.toFixed(1)}ms → interactive ${interactive.toFixed(1)}ms`;
+
+    // Worker-execution guard: the heavy match/raster/ssim run off-thread, so the main
+    // thread must keep servicing tasks during a rematch. Beat a setTimeout(0) heartbeat
+    // while a rematch runs and assert it ticked repeatedly with no stall spanning the
+    // whole compute — a main-thread matcher would freeze the loop for the full duration.
+    // NOTE: no nested named function — tsx/esbuild's `__name` helper would be undefined
+    // in the page. The heartbeat is an anonymous setInterval callback; state lives in an
+    // object so the arrow can mutate it without a `const beat = …` binding.
+    const probe = await page.evaluate(async () => {
+      const before = window.__app.getOutput();
+      const s = { ticks: 0, maxGap: 0, last: performance.now() };
+      const timer = setInterval(() => {
+        const now = performance.now();
+        const gap = now - s.last; s.last = now;
+        if (gap > s.maxGap) s.maxGap = gap;
+        s.ticks++;
+      }, 0);
+      const t0 = performance.now();
+      await window.__app.rematch();
+      const dur = performance.now() - t0;
+      clearInterval(timer);
+      return { ticks: s.ticks, maxGap: s.maxGap, dur, changed: window.__app.getOutput() !== before };
+    }) as { ticks: number; maxGap: number; dur: number; changed: boolean };
+
+    assert.ok(probe.changed, 'liveness rematch did not produce a fresh output');
+    assert.ok(probe.ticks >= 3, `main thread starved during rematch: only ${probe.ticks} heartbeat(s) in ${probe.dur.toFixed(0)}ms`);
+    assert.ok(probe.maxGap < probe.dur, `main thread blocked ${probe.maxGap.toFixed(0)}ms of a ${probe.dur.toFixed(0)}ms rematch (≈ whole compute ⇒ ran on main thread)`);
+
+    return `render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms · ssim ${perf.ssim.toFixed(1)}ms → interactive ${interactive.toFixed(1)}ms; liveness ${probe.ticks} beats, max stall ${probe.maxGap.toFixed(0)}/${probe.dur.toFixed(0)}ms`;
   });
 }
 

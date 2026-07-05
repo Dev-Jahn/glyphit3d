@@ -6,7 +6,7 @@ import { defaultOptions } from '../src/cli.js';
 import { srgbToLinear } from '../src/core/color.js';
 import type { LinearImage } from '../src/core/types.js';
 import { atlasToProfile } from '../scripts/export-atlas.js';
-import { decodeProfile, recomputeGradients } from '../web/src/profile.js';
+import { decodeProfile, recomputeGradients, verifyProfileHash } from '../web/src/profile.js';
 import { imageDataToLinear } from '../web/src/browser-image.js';
 
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';
@@ -106,6 +106,25 @@ describe('profile export/decode round-trip', () => {
         near(gDec.cells[i]!.bg, gLive.cells[i]!.bg);
       }
     }
+  });
+});
+
+describe('profileHash verification', () => {
+  it('accepts the untampered exporter hash', async () => {
+    const atlas = await buildAtlas(FONT, SIZE, 'blocks');
+    const profile = atlasToProfile(atlas, family(), SIZE);
+    await expect(verifyProfileHash(profile)).resolves.toBeUndefined();
+  });
+
+  it('rejects a profile whose coverage bytes were tampered', async () => {
+    const atlas = await buildAtlas(FONT, SIZE, 'blocks');
+    const profile = atlasToProfile(atlas, family(), SIZE);
+    // Flip one coverage byte of the first glyph but keep the declared profileHash —
+    // a decode that trusts the hash would silently feed corrupt glyph α to the matcher.
+    const bytes = Uint8Array.from(atob(profile.glyphs[0]!.alphaB64), (c) => c.charCodeAt(0));
+    bytes[0] = bytes[0]! ^ 0xff;
+    profile.glyphs[0]!.alphaB64 = Buffer.from(bytes).toString('base64');
+    await expect(verifyProfileHash(profile)).rejects.toThrow(/hash mismatch/);
   });
 });
 

@@ -12,6 +12,7 @@ export interface PipelineParams {
   cols: number;
   quality: 0 | 1 | 2 | 3 | 4;
   space: 'linear' | 'gamma';
+  charset: string;
 }
 
 export interface PipelineOutput {
@@ -52,7 +53,7 @@ export class Pipeline {
     const lin = imageDataToLinear(imgData);
     const id = this.nextId++;
     const req: MatchRequest = {
-      type: 'match', id,
+      type: 'match', id, charset: params.charset,
       img: { w: lin.w, h: lin.h, data: lin.data },
       cols: params.cols, quality: params.quality, space: params.space,
     };

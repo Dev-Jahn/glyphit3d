@@ -49,19 +49,22 @@ async function ensureAtlas(charset: Charset): Promise<Atlas> {
 
 async function rematch(): Promise<void> {
   busy = true;
-  const a = await ensureAtlas(params.charset);
-  scene.setOrbit(params.yaw, params.pitch);
-  const out = await pipeline.run(scene, a, { cols: params.cols, quality: params.quality, space: params.space });
-  last = out;
+  try {
+    const a = await ensureAtlas(params.charset);
+    scene.setOrbit(params.yaw, params.pitch);
+    const out = await pipeline.run(scene, a, { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset });
+    last = out;
 
-  rasterCanvas.width = out.raster.w;
-  rasterCanvas.height = out.raster.h;
-  const ctx = rasterCanvas.getContext('2d')!;
-  ctx.putImageData(new ImageData(out.raster.data, out.raster.w, out.raster.h), 0, 0);
+    rasterCanvas.width = out.raster.w;
+    rasterCanvas.height = out.raster.h;
+    const ctx = rasterCanvas.getContext('2d')!;
+    ctx.putImageData(new ImageData(out.raster.data, out.raster.w, out.raster.h), 0, 0);
 
-  ssimEl.textContent = out.ssim.toFixed(4);
-  renderPerf(perfEl, out.timings);
-  busy = false;
+    ssimEl.textContent = out.ssim.toFixed(4);
+    renderPerf(perfEl, out.timings);
+  } finally {
+    busy = false;
+  }
 }
 
 scene.onOrbitEnd = () => {
@@ -102,19 +105,53 @@ window.__app = {
   scene,
 };
 
-void rematch().then(() => { window.__ready = true; });
+// Surface a fatal load error in the page (not just the console). Attached to
+// <html> — the UI module replaces <body>, so an overlay parented on body would be
+// wiped when the demo layout mounts.
+function showError(msg: string): void {
+  console.error(msg);
+  const id = 'ascii3d-error';
+  let note = document.getElementById(id);
+  if (!note) {
+    note = document.createElement('div');
+    note.id = id;
+    note.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:8px 14px;background:#5a1620;color:#ffd7dd;font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;');
+    document.documentElement.appendChild(note);
+  }
+  note.textContent = msg;
+}
+
+// The first rematch can throw (a fragment value that survives clamping, or a
+// profile that fails hash verification). Surface it visibly, but still flip
+// __ready so the UI boots with defaults instead of a permanently blank page.
+void rematch()
+  .catch((e) => { showError(`ascii-3d: initial render failed — ${e instanceof Error ? e.message : String(e)}`); })
+  .finally(() => { window.__ready = true; });
 
 // Minimal fragment reader (cols/quality/charset/space/yaw/pitch). The UI owns the
-// permalink writer; this only applies settings present on load.
+// permalink writer; this only applies settings present on load. Every numeric value
+// is bounded to its control range: an out-of-range or non-finite fragment (e.g.
+// `#cols=abc` or `#cols=100000`) must never brick the page (a bad gridW makes
+// drawImage/getImageData throw), so garbage is ignored and defaults stand.
 function applyFragment(p: Params): void {
   const frag = location.hash.replace(/^#/, '');
   if (!frag) return;
   const q = new URLSearchParams(frag);
-  const n = (k: string): number | undefined => (q.has(k) ? Number(q.get(k)) : undefined);
-  if (n('cols') !== undefined) p.cols = n('cols')!;
-  if (n('quality') !== undefined) p.quality = Math.max(0, Math.min(4, n('quality')!)) as Params['quality'];
-  if (n('yaw') !== undefined) p.yaw = n('yaw')!;
-  if (n('pitch') !== undefined) p.pitch = n('pitch')!;
+  // Finite-only numeric reader: returns undefined for missing or NaN/Infinity.
+  const n = (k: string): number | undefined => {
+    if (!q.has(k)) return undefined;
+    const v = Number(q.get(k));
+    return Number.isFinite(v) ? v : undefined;
+  };
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+  const cols = n('cols');
+  if (cols !== undefined) p.cols = clamp(Math.round(cols), 60, 160); // matches the columns slider range
+  const quality = n('quality');
+  if (quality !== undefined) p.quality = clamp(Math.round(quality), 0, 4) as Params['quality'];
+  const yaw = n('yaw');
+  if (yaw !== undefined) p.yaw = clamp(yaw, -360, 360);
+  const pitch = n('pitch');
+  if (pitch !== undefined) p.pitch = clamp(pitch, -89, 89); // scene clamps pitch to ±89
   const cs = q.get('charset');
   if (cs === 'ascii' || cs === 'blocks' || cs === 'braille' || cs === 'full') p.charset = cs;
   const sp = q.get('space');

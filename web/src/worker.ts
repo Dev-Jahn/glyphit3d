@@ -16,6 +16,7 @@ import { defaultOptions } from '../../src/core/options.js';
 export interface MatchRequest {
   type: 'match';
   id: number;
+  charset: string; // names the atlas to match against (set earlier via setAtlas)
   img: { w: number; h: number; data: Float32Array }; // LinearImage, grid-sized
   cols: number;
   quality: 0 | 1 | 2 | 3 | 4;
@@ -61,8 +62,11 @@ ctx.onmessage = (e: MessageEvent<WorkerRequest>) => {
     atlases.set(msg.charset, msg.atlas);
     return;
   }
-  const atlas = atlases.get(charsetOf(msg));
-  if (!atlas) throw new Error('worker: match before setAtlas');
+  // Maps keep FIRST-insertion order, so "last key" would re-select a stale atlas when
+  // a charset is re-used (blocks→ascii→blocks). Match against the charset the request
+  // names — the atlas must already have been set for it.
+  const atlas = atlases.get(msg.charset);
+  if (!atlas) throw new Error(`worker: no atlas set for charset '${msg.charset}' (setAtlas first)`);
 
   const img: LinearImage = { w: msg.img.w, h: msg.img.h, data: msg.img.data };
 
@@ -97,11 +101,3 @@ ctx.onmessage = (e: MessageEvent<WorkerRequest>) => {
   };
   ctx.postMessage(result, [rgba.buffer]);
 };
-
-// The match request does not name a charset (the atlas is already set); use the
-// single most-recently-set atlas. Kept trivial: the app sets one atlas at a time.
-function charsetOf(_msg: MatchRequest): string {
-  let last = '';
-  for (const k of atlases.keys()) last = k;
-  return last;
-}
