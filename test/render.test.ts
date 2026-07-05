@@ -24,6 +24,7 @@ const atlas: Atlas = {
   cellW: CW, cellH: CH, P: CW * CH,
   fontPath: 'x', fontSize: 8, ascent: 6,
   glyphs: [makeGlyph(' ', 0x20, CW, CH, 0), makeGlyph('#', 0x23, CW, CH, 1)],
+  inkMin: 0, inkMax: 1,
 };
 
 describe('rasterizeGrid', () => {

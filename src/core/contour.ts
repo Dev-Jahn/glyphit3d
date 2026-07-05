@@ -14,6 +14,11 @@ export interface Candidate {
   score: number;
   F: [number, number, number];
   B: [number, number, number];
+  // Carried through the Viterbi verbatim (never read here) so the consumer can reconstruct
+  // non-text winners: `ch` names a family/collapse/gated glyph directly (glyphIdx may not
+  // resolve it), `fgNull` records the emitted cell's fg=null. Mirror core/types.ts Candidate.
+  ch?: string;
+  fgNull?: boolean;
 }
 
 // Extract ordered boundary-cell polylines from a per-cell coverage grid

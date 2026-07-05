@@ -3,6 +3,7 @@ import { buildAtlas } from '../src/atlas/atlas.js';
 import { matchGrid, contourPostPass } from '../src/core/match.js';
 import { extractPolylines, viterbiContour } from '../src/core/contour.js';
 import { borderProfiles } from '../src/atlas/orientation.js';
+import { srgbToLinear } from '../src/core/color.js';
 import type { Atlas, MatchOptions, LinearImage } from '../src/core/types.js';
 
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';
@@ -167,6 +168,80 @@ describe('CONTOUR-INT: §3.6 DP through real matchGrid (M3-SPEC §3.4/§3.6)', (
     const { img, coverage } = checkerScene();
     const g = matchGrid(img, atlas, opts({})); // no topK
     expect(() => contourPostPass(g, atlas, coverage, 2)).toThrow(/topK/);
+  });
+});
+
+// ============================================================================
+// §3.4 cands fix: contourPostPass must reproduce EVERY winner kind at κ_c=0, and
+// preserve fg:null. Pre-fix, family/collapse winners' cands leaked the text topK
+// list so the pass reverted them, and gated/collapsed fg:null regained a phantom fg.
+// ============================================================================
+describe('CONTOUR-INT: §3.4 cands fix — family/collapse/gated winners survive the pass', () => {
+  let atlas: Atlas;
+  beforeAll(async () => { atlas = await buildAtlas(FONT, 16, 'blocks'); }, 60000);
+
+  // 2-col scene: col 0 is the structured "inside" column (its per-cell fill drives the
+  // winner kind), col 1 is flat "outside". coverage = col-0 inside → col 0 is a vertical
+  // boundary polyline, so contourPostPass rewrites exactly those cells from their cand[0].
+  const COLS = 2, ROWS = 6;
+  function scene(fill0: (lx: number, ly: number) => number, fill1 = 0.5) {
+    const { cellW, cellH } = atlas;
+    const w = COLS * cellW, h = ROWS * cellH;
+    const data = new Float32Array(w * h * 3);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const col = Math.floor(x / cellW);
+      const v = col === 0 ? fill0(x % cellW, y % cellH) : fill1;
+      const i = (y * w + x) * 3; data[i] = v; data[i + 1] = v; data[i + 2] = v;
+    }
+    const coverage = new Float32Array(COLS * ROWS);
+    for (let r = 0; r < ROWS; r++) coverage[r * COLS + 0] = 1; // inside = col 0
+    return { img: { w, h, data } as LinearImage, coverage };
+  }
+  // bright-dot 2×4 braille lattice (dark gaps) — braille strictly reconstructs it.
+  function brailleLattice(lx: number, ly: number): number {
+    const { cellW, cellH } = atlas;
+    const r2 = (0.21 * cellW) ** 2;
+    const cx = [0.25 * cellW, 0.75 * cellW], cy = [0.125 * cellH, 0.375 * cellH, 0.625 * cellH, 0.875 * cellH];
+    for (const X of cx) for (const Y of cy) if ((lx + 0.5 - X) ** 2 + (ly + 0.5 - Y) ** 2 <= r2) return 0.95;
+    return 0.05;
+  }
+
+  it('family wins are NOT reverted by contourPostPass(κ_c=0)', () => {
+    const { img, coverage } = scene(brailleLattice);
+    const g = matchGrid(img, atlas, opts({ families: ['braille'], topK: 8 }));
+    const chain = extractPolylines(coverage, COLS, ROWS, 0.5)[0]!;
+    expect(chain).toEqual([0, 2, 4, 6, 8, 10]); // col-0 vertical contour
+    // the column really did emit family (braille U+2800..28FF) glyphs — else no coverage.
+    const brailleCells = chain.filter((i) => { const cp = g.cells[i]!.ch.codePointAt(0)!; return cp >= 0x2800 && cp <= 0x28ff; });
+    expect(brailleCells.length).toBeGreaterThan(0);
+
+    const before = structuredClone(g.cells);
+    contourPostPass(g, atlas, coverage, 0);
+    expect(g.cells).toEqual(before); // byte-identical: family cands are single forced entries
+  });
+
+  it('invisibility-collapse winners are NOT resurrected by contourPostPass(κ_c=0)', () => {
+    // faint 128/140 half-split → passes the gate, a half-block wins, |F−B|≈12 < 16 → collapse.
+    const half = Math.floor(atlas.cellH / 2);
+    const top = srgbToLinear(128), bot = srgbToLinear(140);
+    const { img, coverage } = scene((_lx, ly) => (ly < half ? top : bot));
+    const g = matchGrid(img, atlas, opts({ collapseThreshold: 16, topK: 8 }));
+    const chain = extractPolylines(coverage, COLS, ROWS, 0.5)[0]!;
+    // every col-0 cell collapsed to a space with fg:null (Q3 flat-fill convention).
+    for (const i of chain) { expect(g.cells[i]!.ch).toBe(' '); expect(g.cells[i]!.fg).toBeNull(); }
+
+    const before = structuredClone(g.cells);
+    contourPostPass(g, atlas, coverage, 0);
+    expect(g.cells).toEqual(before); // collapsed space (fg:null) preserved, glyph not resurrected
+  });
+
+  it('a gated boundary cell keeps fg:null through contourPostPass', () => {
+    const { img, coverage } = scene(() => 0.5, 0.1); // col 0 flat gray → gate fires → space, fg null
+    const g = matchGrid(img, atlas, opts({ topK: 8 }));
+    const chain = extractPolylines(coverage, COLS, ROWS, 0.5)[0]!;
+    for (const i of chain) { expect(g.cells[i]!.ch).toBe(' '); expect(g.cells[i]!.fg).toBeNull(); }
+    contourPostPass(g, atlas, coverage, 0);
+    for (const i of chain) expect(g.cells[i]!.fg).toBeNull(); // no phantom fg from the flat mean
   });
 });
 

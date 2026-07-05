@@ -16,6 +16,7 @@ export interface Atlas {
   cellW: number; cellH: number; P: number;
   fontPath: string; fontSize: number; ascent: number; // px at fontSize, from canvas TextMetrics
   glyphs: Glyph[];                          // glyphs[0] MUST be space (ch=' ')
+  inkMin: number; inkMax: number;          // raw ink (Σ|dxA|+|dyA|) min/max across atlas — the scale glyph.ink was min-max normalized on. Families normalize their raw ink onto THIS scale so text/family MDL is comparable (DESIGN §3.6).
 }
 
 export interface GridCell { ch: string; fg: [number, number, number] | null; bg: [number, number, number] | null } // sRGB 0..255 ints
@@ -27,7 +28,16 @@ export interface GridCell { ch: string; fg: [number, number, number] | null; bg:
 // current quality mode, so the contour post-pass can write a GridCell directly. This
 // interface is structurally identical to core/contour.ts's Candidate (kept separate
 // so contour.ts stays a standalone phase-1 module).
-export interface Candidate { glyphIdx: number; score: number; F: [number, number, number]; B: [number, number, number] }
+//
+// `ch` and `fgNull` carry the emitted-cell identity for the non-text winners (family
+// wins, invisibility-collapse, gated flat cells) whose candidate is a single forced
+// entry: `ch` names the emitted glyph directly (family/sextant/braille codepoints are
+// NOT in atlas.glyphs, so glyphIdx cannot resolve them), and `fgNull` records that the
+// emitted cell had fg=null (space/gated Q3/Q4). The contour post-pass reconstructs the
+// cell as { ch: cand.ch ?? atlas.glyphs[glyphIdx].ch, fg: fgNull ? null : F, bg: B }, so
+// contourPostPass(kappaC=0) reproduces the greedy emit byte-for-byte for every winner
+// kind. Both default undefined → plain text candidates are unchanged.
+export interface Candidate { glyphIdx: number; score: number; F: [number, number, number]; B: [number, number, number]; ch?: string; fgNull?: boolean }
 
 export interface Grid { cols: number; rows: number; cells: GridCell[]; cellW: number; cellH: number; font: string;
   cands?: Candidate[][] } // per-cell topK (cols*rows), only when opts.topK>0 — consumed by the contour post-pass

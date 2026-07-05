@@ -93,6 +93,12 @@ export function decodeProfile(profile: Profile): Atlas {
     fontSize: profile.font.size,
     ascent: profile.ascent,
     glyphs,
+    // The profile carries per-glyph NORMALIZED ink only, not the raw-ink scale, so the
+    // family MDL basis cannot be reconstructed here. The web pipeline never requests
+    // families, so these are inert placeholders; if families are ever enabled in the
+    // browser, the profile artifact must additionally serialize inkMin/inkMax.
+    inkMin: 0,
+    inkMax: 1,
   };
 }
 

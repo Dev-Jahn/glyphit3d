@@ -12,8 +12,8 @@ import { edgeSSIM, type EdgeBand } from '../src/metric/edge-ssim.js';
 import { luma, linearToSrgb } from '../src/core/color.js';
 import { resampleArea } from '../src/image/image.js';
 import { maskedSsim, objectMask, otsuThreshold, cellMeanLuma01 } from '../bench/masked-ssim.js';
-import { buildFamilies, type Family, type FamilyName } from '../src/atlas/families.js';
-import type { Atlas, Glyph, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
+import { buildFamilies, augmentAtlas, type FamilyName } from '../src/atlas/families.js';
+import type { Atlas, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
 
 // M1-SPEC §4: the ablation harness. Per zoo model, 4 runs (base / +split / +antibleed /
 // +both) at a κ chosen from a FIXED sweep {0.02,0.05,0.1}. Reports overall,
@@ -327,35 +327,6 @@ function m3opts(over: Partial<MatchOptions>): MatchOptions {
   };
 }
 
-// Append synthesized family glyphs (ch=family codepoint, alpha=Σ region masks of the
-// pattern) for every pattern char NOT already in the atlas. Blocks/space keep their
-// FONT masks (which the text scan also used); the synth-only sextant (U+1FB00…) and
-// braille (U+2800…) codepoints get the exact masks solveFamily fit against, so a
-// families grid re-rasterizes faithfully. matchGrid is UNCHANGED (it uses its own
-// internal buildFamilies for the solve + the base atlas for the text scan); this
-// augmented atlas is only used at rasterize time.
-function augmentAtlas(atlas: Atlas, fams: Family[]): Atlas {
-  const have = new Set(atlas.glyphs.map((g) => g.ch));
-  const P = atlas.P;
-  const extra: Glyph[] = [];
-  for (const f of fams) {
-    const N = 1 << f.k;
-    for (let S = 0; S < N; S++) {
-      const ch = f.ch[S]!;
-      if (have.has(ch)) continue;
-      have.add(ch);
-      const alpha = new Float32Array(P), dxA = new Float32Array(P), dyA = new Float32Array(P);
-      for (let i = 0; i < f.k; i++) {
-        if (!((S >> i) & 1)) continue;
-        const ri = f.regions[i]!, dxi = f.dxR[i]!, dyi = f.dyR[i]!;
-        for (let p = 0; p < P; p++) { alpha[p] = alpha[p]! + ri[p]!; dxA[p] = dxA[p]! + dxi[p]!; dyA[p] = dyA[p]! + dyi[p]!; }
-      }
-      extra.push({ ch, cp: ch.codePointAt(0)!, alpha, dxA, dyA, sumA: f.sumA[S]!, sumAA: f.sumAA[S]!, gradAA: f.gradAA[S]!, ink: f.ink[S]! });
-    }
-  }
-  return { ...atlas, glyphs: [...atlas.glyphs, ...extra] };
-}
-
 // share of grid cells emitting a synthesized sub-cell glyph. Braille U+2800–28FF and
 // sextant U+1FB00–1FB3B are synth-ONLY (never in the blocks atlas), so their count is
 // an unambiguous families-usage signal. Quadrant/half/full block chars are reported
@@ -416,8 +387,12 @@ async function m3Main(): Promise<void> {
   await mkdir(OUT, { recursive: true });
   const atlas = await buildAtlas(FONT, 16, 'blocks');
   const { cellW, cellH } = atlas;
-  const fams = buildFamilies(M3_FAMS, cellW, cellH);
-  const aug = augmentAtlas(atlas, fams);
+  const fams = buildFamilies(M3_FAMS, cellW, cellH, atlas.inkMin, atlas.inkMax);
+  // --override-blocks (M3-fix §7): re-rasterize U+2580–259F block chars through the IDEAL
+  // synth mask (the predict-terminal geometry, DESIGN §5.6) instead of DejaVu's font mask.
+  // Default off reproduces the legacy raster; report the +families delta under both.
+  const OVERRIDE_BLOCKS = process.argv.includes('--override-blocks');
+  const aug = augmentAtlas(atlas, fams, OVERRIDE_BLOCKS);
 
   const zooNames = MODELS.filter((m) => existsSync(join(AOV, m, 'meta.json')));
   const synthNames = ['sphere', 'torus', 'spheres'].filter((n) => existsSync(join(ROOT, 'bench', 'images', `${n}.png`)));
@@ -476,6 +451,7 @@ async function m3Main(): Promise<void> {
   L.push('# M3 ablation — families / orientation / contour (M3-SPEC §4)');
   L.push('');
   L.push(`- atlas: DejaVu Sans Mono @16, blocks (${atlas.glyphs.length} glyphs) + synth families [${M3_FAMS.join(', ')}] → augmented ${aug.glyphs.length} glyphs for raster; cell ${cellW}×${cellH}; space ${SPACE}, Q${QUALITY}`);
+  L.push(`- block-mask override (§7, --override-blocks): **${OVERRIDE_BLOCKS ? 'ON' : 'off'}** — U+2580–259F rasterized through ${OVERRIDE_BLOCKS ? 'IDEAL synth' : 'DejaVu font'} masks.`);
   L.push(`- GATE defaults: gateTau=${GATE_TAU_M3}, mdlLambda=${MDL_M3} (M3-SPEC §1). orientKappa default=${ORIENT_DEF}, κ_c default=${CONTOUR_DEF} (sweep midpoints).`);
   L.push(`- reference: zoo = shaded AOV at footprint; synth = 120-col resample. object-cell = coverage>0.3 (zoo) / Otsu (synth); edgeSSIM over the coverage-boundary band (§3.5).`);
   L.push(`- **synthetics have no coverage AOV** — orient/contour there use a per-pixel gamma-luma silhouette proxy (documented; their edgeSSIM column is proxy-derived and excluded from the §3 zoo verdict).`);

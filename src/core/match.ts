@@ -112,14 +112,21 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   // Q1 (mono, fixed colors) is exempt. Emits mirror the gated-cell convention (Q2: mean in fg,
   // bg fixed; Q3/Q4: mean in bg, fg null); B is fbg in Q2 (fixed bg), the fitted bg in Q3/Q4.
   const collapseThreshold = opts.collapseThreshold ?? 0;
+  // Set by emitWinner on each call: true iff the invisibility collapse fired (winner
+  // replaced by space + flat mean). Read right after the call to decide whether a topK
+  // text candidate list must be overwritten with the collapsed single candidate (§3.4
+  // cands fix) — the greedy emit and cand[0] must stay in lockstep for the contour pass.
+  let lastCollapsed = false;
   const emitWinner = (
     ch: string, F: [number, number, number], B: [number, number, number], sumA: number,
   ): GridCell => {
+    lastCollapsed = false;
     if (quality === 1) return { ch, fg: encode(ffg), bg: encode(fbg) };
     const fgEnc = encode(F);
     const bgEnc = quality === 2 ? encode(fbg) : encode(B);
     if (collapseThreshold > 0 &&
         Math.max(Math.abs(fgEnc[0] - bgEnc[0]), Math.abs(fgEnc[1] - bgEnc[1]), Math.abs(fgEnc[2] - bgEnc[2])) < collapseThreshold) {
+      lastCollapsed = true;
       const Bc = quality === 2 ? fbg : B;
       const mean: [number, number, number] = [
         (sumA * F[0] + (P - sumA) * Bc[0]) / P,
@@ -130,6 +137,14 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
     }
     return { ch, fg: fgEnc, bg: bgEnc };
   };
+  // A single-entry candidate list that reproduces `cell` exactly under contourPostPass —
+  // used for every winner whose cands entry must be the forced emit (family, collapse,
+  // gated flat). fgNull carries the space/gated null-fg semantics; ch names non-atlas
+  // (family) glyphs directly. B is never null on any emit path here.
+  const singleCand = (cell: GridCell, glyphIdx: number, score: number): Candidate[] => [{
+    glyphIdx, score, ch: cell.ch,
+    F: cell.fg ?? [0, 0, 0], B: cell.bg ?? [0, 0, 0], fgNull: cell.fg === null,
+  }];
 
   const cells: GridCell[] = new Array(cols * rows);
 
@@ -163,7 +178,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   // M3 synthesized families (M3-SPEC §2). Built once; each competes its exact region
   // solve with the text scan per cell in the same score space. Empty → the family block
   // below is skipped entirely so default output stays byte-identical to M0/M1.
-  const families = buildFamilies(opts.families ?? [], cellW, cellH);
+  const families = buildFamilies(opts.families ?? [], cellW, cellH, atlas.inkMin, atlas.inkMax);
   // per-cell fit context reused across the family solves (mutable fields set per cell).
   const famCtx: CellFitCtx | null = families.length
     ? { P, T: new Float32Array(0), ST: new Float32Array(0), STT: new Float32Array(0),
@@ -268,7 +283,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         // (already-known) SSE against the mean so the contour Viterbi can keep it.
         if (cands) {
           const c = cells[cellIdx]!;
-          cands[cellIdx] = [{ glyphIdx: 0, score: eacScale, F: c.fg ?? encode(mean), B: c.bg ?? encode(mean) }];
+          cands[cellIdx] = [{ glyphIdx: 0, score: eacScale, F: c.fg ?? encode(mean), B: c.bg ?? encode(mean), fgNull: c.fg === null }];
         }
         continue;
       }
@@ -443,6 +458,12 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         famCtx.minT = minT; famCtx.maxT = maxT;
         famCtx.dxT = dxT; famCtx.dyT = dyT; famCtx.gradTT = gradTT;
         famCtx.eacScale = eacScale;
+        // Forward the SAME per-cell selection priors the text scan applied (M3-fix §3): a
+        // family pattern must earn/lose the identical split/antibleed/orientation bonus a
+        // text glyph of the same mask would, or the meta-selection is rigged toward text.
+        famCtx.eta = eta; famCtx.Lpatch = Lpatch ?? null; famCtx.SL = SL; famCtx.SLL = SLL;
+        famCtx.boundary = boundary; famCtx.idm = idm ?? null; famCtx.SI = SI; famCtx.antibleedKappa = kappa;
+        famCtx.oriBoundary = oriBoundary; famCtx.oriTheta = oriTheta; famCtx.oriWe = oriWe; famCtx.orientKappa = orientKappa;
         for (const f of families) {
           const sol = solveFamily(f, famCtx);
           if (famWin === null || sol.score < famWin.score) famWin = sol;
@@ -453,7 +474,12 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       // 3a. family winner → emit its solved ch + colors (colors already fit), via the
       // invisibility collapse (emitWinner). famWin.B is fbg in Q2, the fitted bg in Q3/Q4.
       if (famWin) {
-        cells[cellIdx] = emitWinner(famWin.ch, famWin.F, famWin.B, famWin.sumA);
+        const cell = emitWinner(famWin.ch, famWin.F, famWin.B, famWin.sumA);
+        cells[cellIdx] = cell;
+        // §3.4 cands fix: the family win (or its collapse to space) IS the emit, so the
+        // cell's sole candidate must be that emit — else the text topK list set above
+        // leaks through and contourPostPass reverts the family win back to a text glyph.
+        if (cands) cands[cellIdx] = singleCand(cell, 0, famWin.score);
         continue;
       }
 
@@ -506,6 +532,11 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       // winner → emit via the invisibility collapse (emitWinner). B is fbg in Q2 (channelFB
       // fixes it), the fitted bg in Q3/Q4; collapseThreshold=0 → byte-identical to pre-collapse.
       cells[cellIdx] = emitWinner(g.ch, F, B, g.sumA);
+      // §3.4 cands fix: when the winner collapses to space, cand[0] (the un-collapsed text
+      // glyph from the topK scan) no longer matches the emit — overwrite with the collapsed
+      // single candidate so contourPostPass cannot resurrect the collapsed glyph. Un-collapsed
+      // text winners keep their full topK list (cand[0] already reproduces the emit).
+      if (cands && lastCollapsed) cands[cellIdx] = singleCand(cells[cellIdx]!, bestGi, bestScore);
     }
   }
 
@@ -527,7 +558,14 @@ export function contourPostPass(grid: Grid, atlas: Atlas, coverageCells: Float32
   for (const pl of polylines) {
     const chosen = viterbiContour(pl, cbc, profiles, grid.cols, kappaC);
     for (const [idx, cand] of chosen) {
-      grid.cells[idx] = { ch: atlas.glyphs[cand.glyphIdx]!.ch, fg: cand.F, bg: cand.B };
+      // cand.ch names non-atlas (family/collapse/gated) winners directly; fall back to the
+      // atlas glyph for plain text candidates. fgNull preserves the space/gated null-fg
+      // semantics that a raw cand.F (a phantom mean) would otherwise overwrite.
+      grid.cells[idx] = {
+        ch: cand.ch ?? atlas.glyphs[cand.glyphIdx]!.ch,
+        fg: cand.fgNull ? null : cand.F,
+        bg: cand.B,
+      };
     }
   }
 }

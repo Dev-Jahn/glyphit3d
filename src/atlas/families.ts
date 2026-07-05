@@ -12,8 +12,9 @@
 // fitBox/sseAt from core/fit) — the thin channel wrapper below is a byte-for-byte copy
 // of match.ts's channelSse/channelFB and MUST stay in sync with it.
 
-import type { FitStatsG } from '../core/types.js';
+import type { FitStatsG, Atlas, Glyph } from '../core/types.js';
 import { sseAt, fitFree, fitFgOnly, fitBox } from '../core/fit.js';
+import { orientationBonus } from './orientation.js';
 
 export type FamilyName = 'quadrant' | 'sextant' | 'braille';
 
@@ -33,6 +34,11 @@ export interface Family {
   rawInk: Float32Array;    // Σ(|dxA_S|+|dyA_S|) per pattern, un-normalized
   ink: Float32Array;       // rawInk normalized to [0,1] (MDL complexity proxy)
   ch: string[];            // codepoint char per pattern (empty pattern → ' ')
+  // Per-pattern structure-tensor orientation of the SUMMED mask gradient (§3.3), in the
+  // SAME frame as glyphOrientation (structureTensor over dxA/dyA). Precomputed 2^k
+  // one-time so solveFamily can apply the identical orientation prior a text glyph gets.
+  oriTheta: Float32Array;  // dominant stroke angle per pattern
+  oriAniso: Float32Array;  // anisotropy per pattern ∈ [0,1]
 }
 
 const SS = 8; // supersample factor (M3-SPEC §2.1)
@@ -209,6 +215,8 @@ export function buildFamily(name: FamilyName, cellW: number, cellH: number): Fam
   const sumAA = new Float32Array(N);
   const gradAA = new Float32Array(N);
   const rawInk = new Float32Array(N);
+  const oriTheta = new Float32Array(N);
+  const oriAniso = new Float32Array(N);
   const ch: string[] = new Array(N);
   for (let S = 0; S < N; S++) {
     let a = 0, aa = 0, gg = 0;
@@ -222,8 +230,9 @@ export function buildFamily(name: FamilyName, cellW: number, cellH: number): Fam
       }
     }
     sumA[S] = a; sumAA[S] = aa; gradAA[S] = gg;
-    // rawInk from the summed pattern gradient
-    let ink = 0;
+    // rawInk from the summed pattern gradient; simultaneously accumulate the structure
+    // tensor J = Σ[gx² gxgy; gxgy gy²] of that same summed gradient for the §3.3 prior.
+    let ink = 0, Jxx = 0, Jyy = 0, Jxy = 0;
     for (let p = 0; p < P; p++) {
       let gx = 0, gy = 0;
       for (let i = 0; i < k; i++) {
@@ -232,8 +241,16 @@ export function buildFamily(name: FamilyName, cellW: number, cellH: number): Fam
         gy += dyR[i]![p]!;
       }
       ink += Math.abs(gx) + Math.abs(gy);
+      Jxx += gx * gx; Jyy += gy * gy; Jxy += gx * gy;
     }
     rawInk[S] = ink;
+    // dominant eigen-angle + anisotropy (byte-for-byte the orientation.ts structureTensor
+    // math, so θ_g lives in the same frame as glyphOrientation for the cos 2Δ term).
+    const trace = Jxx + Jyy;
+    const diff = Jxx - Jyy;
+    const disc = Math.sqrt(diff * diff + 4 * Jxy * Jxy);
+    oriTheta[S] = 0.5 * Math.atan2(2 * Jxy, diff);
+    oriAniso[S] = trace > 0 ? disc / trace : 0; // (l1−l2)/trace = disc/trace
     ch[S] = patternChar(name, S);
   }
 
@@ -244,20 +261,27 @@ export function buildFamily(name: FamilyName, cellW: number, cellH: number): Fam
   const ink = new Float32Array(N);
   if (maxInk > 0) for (let S = 0; S < N; S++) ink[S] = rawInk[S]! / maxInk;
 
-  return { name, k, P, regions, bg, dxR, dyR, sumA, sumAA, gradAA, rawInk, ink, ch };
+  return { name, k, P, regions, bg, dxR, dyR, sumA, sumAA, gradAA, rawInk, ink, ch, oriTheta, oriAniso };
 }
 
-// Build several families and normalize their ink onto ONE [0,1] scale (global max
-// across all patterns) so the MDL complexity penalty is comparable across families in
-// meta-selection (braille's dense patterns pay more than a quadrant half-block).
-export function buildFamilies(names: FamilyName[], cellW: number, cellH: number): Family[] {
+// Build several families and normalize their ink onto the ATLAS raw-ink scale so the
+// MDL complexity penalty λ·ink·E_AC is directly comparable between a family pattern and
+// a text glyph of the same mask. The atlas normalizes glyph ink as (rawInk−inkMin)/
+// (inkMax−inkMin) (atlas.ts); families use the SAME affine map (clamped to [0,1] since a
+// dense braille pattern can exceed the atlas's own inkMax). Pass atlas.inkMin/atlas.inkMax.
+// Pre-fix these normalized by the requested-family-set max (0-based), so the SAME mask
+// paid a different MDL as text vs family AND the family score space depended on which
+// families were requested — both fixed here.
+export function buildFamilies(names: FamilyName[], cellW: number, cellH: number, inkMin: number, inkMax: number): Family[] {
   const fams = names.map((n) => buildFamily(n, cellW, cellH));
-  let maxInk = 0;
-  for (const f of fams) for (let S = 0; S < f.rawInk.length; S++) if (f.rawInk[S]! > maxInk) maxInk = f.rawInk[S]!;
-  if (maxInk > 0) {
+  const span = inkMax - inkMin;
+  if (span > 0) {
     for (const f of fams) {
       const ink = new Float32Array(f.rawInk.length);
-      for (let S = 0; S < ink.length; S++) ink[S] = f.rawInk[S]! / maxInk;
+      for (let S = 0; S < ink.length; S++) {
+        const v = (f.rawInk[S]! - inkMin) / span;
+        ink[S] = v < 0 ? 0 : v > 1 ? 1 : v;
+      }
       (f as { ink: Float32Array }).ink = ink;
     }
   }
@@ -285,6 +309,24 @@ export interface CellFitCtx {
   fbg: [number, number, number]; // working-space fixed bg
   mdlLambda: number;
   eacScale: number;
+
+  // Selection priors (all optional, all default off). When a prior is on for the text
+  // scan it MUST be on for the family solve too, or families are unfairly under/over-
+  // subsidized in meta-selection. Each is applied to the SUMMED pattern mask α_S via the
+  // per-region dot machinery, so a family pattern and the identical-mask text glyph get
+  // the byte-identical bonus. See match.ts's in-scan blocks for the reference formulas.
+  eta?: number;                 // §4.1 split-selection weight (0 = off)
+  Lpatch?: Float32Array | null; // shading-luma patch (length P)
+  SL?: number;                  // Σ Lpatch
+  SLL?: number;                 // Σ Lpatch²
+  boundary?: boolean;           // §4.2 boundary cell?
+  idm?: Float32Array | null;    // object-id indicator (α_i∈A) patch (length P)
+  SI?: number;                  // Σ idm (== majority-id covered count)
+  antibleedKappa?: number;      // §4.2 κ (0 = off)
+  oriBoundary?: boolean;        // §3.3 orientation-boundary cell?
+  oriTheta?: number;            // edge-field θ_e
+  oriWe?: number;               // edge strength w_e
+  orientKappa?: number;         // §3.3 κ (0 = off)
 }
 
 // Byte-for-byte copy of match.ts channelSse (must stay in sync). Scores a candidate at
@@ -364,6 +406,21 @@ export function solveFamily(f: Family, ctx: CellFitCtx): FamilySolve {
     }
   }
 
+  // Prior region dots — computed once, linear in the summed mask (Σ_{i∈S} d[i] == α_S··).
+  // Only built when the corresponding prior is on, so the default family solve is untouched.
+  const eta = ctx.eta ?? 0;
+  const doSplit = eta > 0 && ctx.Lpatch != null;
+  const kappa = ctx.antibleedKappa ?? 0;
+  const doAnti = kappa > 0 && (ctx.boundary ?? false) && ctx.idm != null;
+  const orientKappa = ctx.orientKappa ?? 0;
+  const doOri = orientKappa > 0 && (ctx.oriBoundary ?? false);
+  const dL = doSplit ? new Float64Array(k) : null;
+  if (dL) { const L = ctx.Lpatch!; for (let i = 0; i < k; i++) { const a = f.regions[i]!; let d = 0; for (let p = 0; p < P; p++) d += a[p]! * L[p]!; dL[i] = d; } }
+  const dI = doAnti ? new Float64Array(k) : null;
+  if (dI) { const im = ctx.idm!; for (let i = 0; i < k; i++) { const a = f.regions[i]!; let d = 0; for (let p = 0; p < P; p++) d += a[p]! * im[p]!; dI[i] = d; } }
+  const lStats: FitStatsG = { Saa: 0, Sa1: 0, S11: P };
+  const SL = ctx.SL ?? 0, SLL = ctx.SLL ?? 0, SI = ctx.SI ?? 0;
+
   const gStats: FitStatsG = { Saa: 0, Sa1: 0, S11: P };
   const N = 1 << k;
   let bestScore = Infinity, bestSse = Infinity, bestPat = 0;
@@ -384,7 +441,32 @@ export function solveFamily(f: Family, ctx: CellFitCtx): FamilySolve {
       }
       sse += channelSse(gStats, saT, ST[c]!, stt, quality, minT[c]!, maxT[c]!, ffg[c]!, fbg[c]!);
     }
-    const score = sse + mdlLambda * f.ink[S]! * eacScale;
+    let score = sse + mdlLambda * f.ink[S]! * eacScale;
+    // §4.1 split-selection channel (identical to match.ts's Lpatch block, on α_S).
+    if (dL) {
+      lStats.Saa = f.sumAA[S]!; lStats.Sa1 = f.sumA[S]!; lStats.S11 = P;
+      let saL = 0;
+      for (let i = 0; i < k; i++) if ((S >> i) & 1) saL += dL[i]!;
+      score += eta * fitFree(lStats, saL, SL, SLL).sse;
+    }
+    // §4.2 anti-bleed object-id correlation bonus (identical to match.ts, on α_S).
+    if (dI) {
+      let sai = 0;
+      for (let i = 0; i < k; i++) if ((S >> i) & 1) sai += dI[i]!;
+      const num = sai - (f.sumA[S]! * SI) / P;
+      const varA = f.sumAA[S]! - (f.sumA[S]! * f.sumA[S]!) / P;
+      const varI = SI - (SI * SI) / P;
+      const denom = varA * varI;
+      const rho = denom > 1e-12 ? num / Math.sqrt(denom) : 0;
+      score -= kappa * Math.abs(rho) * eacScale;
+    }
+    // §3.3 orientation prior (identical to match.ts, per-pattern θ_g/a_g of α_S).
+    if (doOri) {
+      score -= orientationBonus(
+        { theta: f.oriTheta[S]!, anisotropy: f.oriAniso[S]!, energy: 0 },
+        ctx.oriTheta ?? 0, ctx.oriWe ?? 0, eacScale, orientKappa,
+      );
+    }
     if (score < bestScore) { bestScore = score; bestSse = sse; bestPat = S; }
   }
 
@@ -410,4 +492,55 @@ export function solveFamily(f: Family, ctx: CellFitCtx): FamilySolve {
   }
 
   return { pattern: bestPat, sse: bestSse, score: bestScore, F, B, sumA: f.sumA[bestPat]!, ch: f.ch[bestPat]! };
+}
+
+// ---- augmented atlas (raster / SSIM only) ------------------------------------
+
+// The summed-mask Glyph for pattern S (alpha/gradients = Σ over the pattern's regions,
+// scalars from the precomputed tables). This is the EXACT mask solveFamily fit against,
+// so a grid emitting pattern S re-rasterizes it faithfully (DESIGN §5.6 "our own raster").
+function patternGlyph(f: Family, S: number, P: number): Glyph {
+  const alpha = new Float32Array(P), dxA = new Float32Array(P), dyA = new Float32Array(P);
+  for (let i = 0; i < f.k; i++) {
+    if (!((S >> i) & 1)) continue;
+    const ri = f.regions[i]!, dxi = f.dxR[i]!, dyi = f.dyR[i]!;
+    for (let p = 0; p < P; p++) { alpha[p] = alpha[p]! + ri[p]!; dxA[p] = dxA[p]! + dxi[p]!; dyA[p] = dyA[p]! + dyi[p]!; }
+  }
+  return { ch: f.ch[S]!, cp: f.ch[S]!.codePointAt(0)!, alpha, dxA, dyA, sumA: f.sumA[S]!, sumAA: f.sumAA[S]!, gradAA: f.gradAA[S]!, ink: f.ink[S]! };
+}
+
+const BLOCK_LO = 0x2580, BLOCK_HI = 0x259f; // U+2580–259F block elements
+
+// Append synthesized family glyphs to an atlas for RASTER / SSIM measurement ONLY —
+// matchGrid keeps using the base atlas + its own internal buildFamilies for the solve, so
+// this is used solely to re-rasterize a families grid. Every pattern char not already in
+// the atlas is appended with its exact synth mask (braille U+2800…/sextant U+1FB00… are
+// always synth-only). Load-bearing measurement code shared by bench + scripts (M3-fix §8).
+//
+// overrideBlocks (M3-fix §7): the U+2580–259F block chars ARE in the DejaVu atlas, so by
+// default a family win emitting e.g. '▀' re-rasterizes through DejaVu's font mask — NOT the
+// ideal block geometry the family solver fit. DESIGN §5.6: terminals synthesize these ranges
+// with ideal geometry regardless of how the char was chosen, so the ideal mask IS the correct
+// predict-terminal model. When true, existing block-range chars are OVERRIDDEN with the ideal
+// synth mask. Default false = legacy (DejaVu masks kept) so existing numbers reproduce.
+export function augmentAtlas(atlas: Atlas, fams: Family[], overrideBlocks = false): Atlas {
+  const glyphs = atlas.glyphs.slice();
+  const idxByCh = new Map<string, number>();
+  glyphs.forEach((g, i) => idxByCh.set(g.ch, i));
+  const P = atlas.P;
+  for (const f of fams) {
+    const N = 1 << f.k;
+    for (let S = 0; S < N; S++) {
+      const ch = f.ch[S]!;
+      const cp = ch.codePointAt(0)!;
+      const existing = idxByCh.get(ch);
+      if (existing !== undefined) {
+        if (overrideBlocks && cp >= BLOCK_LO && cp <= BLOCK_HI) glyphs[existing] = patternGlyph(f, S, P);
+        continue;
+      }
+      idxByCh.set(ch, glyphs.length);
+      glyphs.push(patternGlyph(f, S, P));
+    }
+  }
+  return { ...atlas, glyphs };
 }

@@ -167,5 +167,5 @@ export async function buildAtlas(
     glyphs.unshift(sp!);
   }
 
-  return { cellW, cellH, P, fontPath, fontSize, ascent, glyphs };
+  return { cellW, cellH, P, fontPath, fontSize, ascent, glyphs, inkMin, inkMax };
 }

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildAtlas } from '../src/atlas/atlas.js';
-import { buildFamily, solveFamily, type CellFitCtx, type FamilyName } from '../src/atlas/families.js';
+import { buildFamily, buildFamilies, solveFamily, type CellFitCtx, type FamilyName } from '../src/atlas/families.js';
 import { matchGrid } from '../src/core/match.js';
 import { sseAt, fitFree, fitFgOnly, fitBox } from '../src/core/fit.js';
+import { structureTensor, orientationBonus } from '../src/atlas/orientation.js';
 import type { Atlas, MatchOptions, LinearImage, Grid } from '../src/core/types.js';
 
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';
@@ -212,6 +213,117 @@ describe('families: meta-selection regression (M3-SPEC §2.4)', () => {
 
     expect(matchGrid(img, atlas, defaults({})).cells).toEqual(golden.cells);            // absent
     expect(matchGrid(img, atlas, defaults({ families: [] })).cells).toEqual(golden.cells); // []
+  });
+});
+
+describe('families: MDL ink basis == atlas raw-ink scale (M3-fix §2)', () => {
+  let atlas: Atlas;
+  beforeAll(async () => { atlas = await buildAtlas(FONT, 16, 'blocks'); }, 60000);
+
+  // Post-fix, a family pattern's normalized ink is the SAME affine map atlas.ts applies to
+  // a text glyph: clamp01((rawInk − inkMin)/(inkMax − inkMin)). So an identical mask pays an
+  // identical MDL penalty whether it enters selection as a text glyph or a family pattern.
+  it('each pattern is normalized onto the atlas affine ink map (identical mask ⇒ identical MDL as text)', () => {
+    const { cellW, cellH, inkMin, inkMax } = atlas;
+    const span = inkMax - inkMin;
+    const [quad] = buildFamilies(['quadrant', 'braille'], cellW, cellH, inkMin, inkMax);
+    for (let S = 0; S < quad!.ink.length; S++) {
+      const expected = Math.max(0, Math.min(1, (quad!.rawInk[S]! - inkMin) / span));
+      expect(quad!.ink[S]).toBeCloseTo(expected, 6); // 6 dp: ink is Float32-stored; the bug's error is ~0.05+
+    }
+    // upper-half (quadrant pattern 3 == '▀'): MDL normalized ink == what the atlas would
+    // assign a text glyph carrying the same raw ink. The two MDL bases coincide.
+    expect(quad!.ink[3]).toBeCloseTo(Math.max(0, Math.min(1, (quad!.rawInk[3]! - inkMin) / span)), 6);
+  });
+
+  // The bug: family ink used to be normalized by the requested-family-set max, so adding
+  // braille to the request rescaled quadrant's MDL (and thus the whole score space). Fixed:
+  // the basis is the atlas scale, independent of which families are requested.
+  it('quadrant ink + solver winner are invariant to adding braille to the request set', () => {
+    const { cellW, cellH, inkMin, inkMax } = atlas;
+    const qAlone = buildFamilies(['quadrant'], cellW, cellH, inkMin, inkMax)[0]!;
+    const qWith = buildFamilies(['quadrant', 'braille'], cellW, cellH, inkMin, inkMax)[0]!;
+    for (let S = 0; S < qAlone.ink.length; S++) expect(qWith.ink[S]).toBeCloseTo(qAlone.ink[S]!, 9);
+    // a fixed scene selects the same quadrant pattern + score either way.
+    const ctx = ctxFor(grayTarget((_lx, ly) => (ly < CELL_H / 2 ? 0.85 : 0.15)));
+    const a = solveFamily(qAlone, ctx), b = solveFamily(qWith, ctx);
+    expect(b.pattern).toBe(a.pattern);
+    expect(b.score).toBeCloseTo(a.score, 9);
+  });
+});
+
+describe('families: selection priors apply identically to family patterns (M3-fix §3)', () => {
+  const NAMES: FamilyName[] = ['quadrant', 'sextant', 'braille'];
+
+  // The reference: every prior (split/antibleed/orientation) scored on the ACTUAL summed
+  // pattern mask α_S, exactly the way match.ts scores a text glyph of that mask. solveFamily
+  // must reproduce this argmin+score to 1e-6 — i.e. a family pattern earns the byte-identical
+  // bonus a text glyph of the same mask would, so meta-selection is fair.
+  function chSse(Saa: number, Sa1: number, S11: number, SaT: number, S1T: number, STT: number,
+                 mn: number, mx: number): number {
+    const free = fitFree({ Saa, Sa1, S11 }, SaT, S1T, STT); const F = free.a + free.b, B = free.b;
+    if (F >= mn && F <= mx && B >= mn && B <= mx) return free.sse;
+    return fitBox({ Saa, Sa1, S11 }, SaT, S1T, STT, mn, mx, mn, mx).sse;
+  }
+
+  it('brute force over summed masks (base + split + antibleed + orient) == solveFamily', () => {
+    for (const name of NAMES) {
+      const f = buildFamily(name, CELL_W, CELL_H);
+      for (let trial = 0; trial < 3; trial++) {
+        const rnd = mulberry32(7000 + trial * 31);
+        const T = new Float32Array(3 * P);
+        const ST = new Float32Array(3), STT = new Float32Array(3);
+        const minT = new Float32Array(3), maxT = new Float32Array(3);
+        for (let c = 0; c < 3; c++) { minT[c] = Infinity; maxT[c] = -Infinity; }
+        for (let c = 0; c < 3; c++) {
+          const b = c * P;
+          for (let p = 0; p < P; p++) { const v = rnd(); T[b + p] = v; ST[c] = ST[c]! + v; STT[c] = STT[c]! + v * v; if (v < minT[c]!) minT[c] = v; if (v > maxT[c]!) maxT[c] = v; }
+        }
+        // shading-luma patch (split), object-id indicator (antibleed), edge field (orient).
+        const Lpatch = new Float32Array(P); let SL = 0, SLL = 0;
+        const idm = new Float32Array(P); let SI = 0;
+        for (let p = 0; p < P; p++) {
+          const l = rnd(); Lpatch[p] = l; SL += l; SLL += l * l;
+          const on = rnd() > 0.5 ? 1 : 0; idm[p] = on; SI += on;
+        }
+        const eta = 0.5, kappa = 0.05, orientKappa = 0.05, eac = 0.7, oriTheta = 0.4, oriWe = 1.3;
+
+        const ctx: CellFitCtx = {
+          P, T, ST, STT, minT, maxT,
+          dxT: new Float32Array(3 * P), dyT: new Float32Array(3 * P), gradTT: new Float32Array(3),
+          quality: 3, isQ4: false, lam2: 0, ffg: [1, 1, 1], fbg: [0, 0, 0], mdlLambda: 0.02, eacScale: eac,
+          eta, Lpatch, SL, SLL, boundary: true, idm, SI, antibleedKappa: kappa,
+          oriBoundary: true, oriTheta, oriWe, orientKappa,
+        };
+        const sol = solveFamily(f, ctx);
+
+        let bestScore = Infinity, bestPat = 0;
+        for (let S = 0; S < (1 << f.k); S++) {
+          const mask = new Float32Array(P), dxM = new Float32Array(P), dyM = new Float32Array(P);
+          for (let i = 0; i < f.k; i++) if ((S >> i) & 1) {
+            const a = f.regions[i]!, dx = f.dxR[i]!, dy = f.dyR[i]!;
+            for (let p = 0; p < P; p++) { mask[p] = mask[p]! + a[p]!; dxM[p] = dxM[p]! + dx[p]!; dyM[p] = dyM[p]! + dy[p]!; }
+          }
+          let sumA = 0, sumAA = 0; for (let p = 0; p < P; p++) { sumA += mask[p]!; sumAA += mask[p]! * mask[p]!; }
+          let sse = 0;
+          for (let c = 0; c < 3; c++) { let saT = 0; for (let p = 0; p < P; p++) saT += mask[p]! * T[c * P + p]!; sse += chSse(sumAA, sumA, P, saT, ST[c]!, STT[c]!, minT[c]!, maxT[c]!); }
+          let score = sse + 0.02 * f.ink[S]! * eac;
+          // split: shading-luma channel on the summed mask
+          let saL = 0; for (let p = 0; p < P; p++) saL += mask[p]! * Lpatch[p]!;
+          score += eta * fitFree({ Saa: sumAA, Sa1: sumA, S11: P }, saL, SL, SLL).sse;
+          // antibleed: object-id correlation on the summed mask
+          let sai = 0; for (let p = 0; p < P; p++) sai += mask[p]! * idm[p]!;
+          const num = sai - (sumA * SI) / P, varA = sumAA - (sumA * sumA) / P, varI = SI - (SI * SI) / P, denom = varA * varI;
+          const rho = denom > 1e-12 ? num / Math.sqrt(denom) : 0;
+          score -= kappa * Math.abs(rho) * eac;
+          // orientation: structure tensor of the summed mask gradient (== identical-mask text glyph)
+          score -= orientationBonus(structureTensor(dxM, dyM, P), oriTheta, oriWe, eac, orientKappa);
+          if (score < bestScore) { bestScore = score; bestPat = S; }
+        }
+        expect(sol.pattern).toBe(bestPat);
+        expect(sol.score).toBeCloseTo(bestScore, 5);
+      }
+    }
   });
 });
 

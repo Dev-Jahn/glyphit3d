@@ -15,33 +15,19 @@ import { savePng } from '../src/render/raster-io.js';
 import { ssim } from '../src/metric/ssim.js';
 import { parseAnsiToGrid } from './ansi-parse.js';
 import { objectMask, otsuThreshold, maskedSsim, cellMeanLuma01 } from './masked-ssim.js';
-import { buildFamilies, type Family, type FamilyName } from '../src/atlas/families.js';
-import type { Atlas, Glyph, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
+import { buildFamilies, augmentAtlas, type FamilyName } from '../src/atlas/families.js';
+import { defaultOptions } from '../src/core/options.js';
+import type { Atlas, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
 
-// M3-SPEC §4 criterion-2 fairness run: synthesized families the matcher can use, and
-// the SAME braille/sextant symbol classes granted to chafa (fair both ways). augmentAtlas
+// M3-SPEC §4 criterion-2 fairness run: synthesized families the matcher can use, and the
+// braille symbol class granted to chafa (fair both ways). augmentAtlas (src/atlas/families)
 // appends the exact synth masks so BOTH engines' sub-cell picks re-rasterize identically.
+// NOTE (M3-fix §6): chafa 1.18.2 consumes braille but emits ZERO U+1FB00 sextant glyphs
+// (verified: sextant/legacy/all classes and the codepoint range all yield none), so the
+// full-capability run keeps sextant in OURS' families while --strict drops it from BOTH
+// engines to the truly-shared repertoire (atlas + braille).
 const M3_FAMS: FamilyName[] = ['quadrant', 'sextant', 'braille'];
-function augmentAtlas(atlas: Atlas, fams: Family[]): Atlas {
-  const have = new Set(atlas.glyphs.map((g) => g.ch));
-  const P = atlas.P;
-  const extra: Glyph[] = [];
-  for (const f of fams) {
-    for (let S = 0; S < (1 << f.k); S++) {
-      const ch = f.ch[S]!;
-      if (have.has(ch)) continue;
-      have.add(ch);
-      const alpha = new Float32Array(P), dxA = new Float32Array(P), dyA = new Float32Array(P);
-      for (let i = 0; i < f.k; i++) {
-        if (!((S >> i) & 1)) continue;
-        const ri = f.regions[i]!, dxi = f.dxR[i]!, dyi = f.dyR[i]!;
-        for (let p = 0; p < P; p++) { alpha[p] = alpha[p]! + ri[p]!; dxA[p] = dxA[p]! + dxi[p]!; dyA[p] = dyA[p]! + dyi[p]!; }
-      }
-      extra.push({ ch, cp: ch.codePointAt(0)!, alpha, dxA, dyA, sumA: f.sumA[S]!, sumAA: f.sumAA[S]!, gradAA: f.gradAA[S]!, ink: f.ink[S]! });
-    }
-  }
-  return { ...atlas, glyphs: [...atlas.glyphs, ...extra] };
-}
+const M3_FAMS_STRICT: FamilyName[] = ['quadrant', 'braille']; // both engines can render these
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -58,15 +44,11 @@ let CHARSET: keyof typeof CHARSETS = 'blocks';
 
 type Space = 'linear' | 'gamma';
 
+// M3-fix §5: source defaults from src/core/options.ts defaultOptions() so the no-flag
+// reproduction command measures PRODUCTION defaults (gateTau 2e-5, space 'gamma', …), not a
+// stale hardcoded gateTau 2e-4. The matrix runs still override gateTau/space per RunSpec.
 function baseOpts(): MatchOptions {
-  return {
-    quality: 3,
-    edgeLambda: 0.35,
-    gateTau: 2e-4,
-    mdlLambda: 0.02,
-    fixedBg: [0, 0, 0],
-    fixedFg: [1, 1, 1],
-  };
+  return defaultOptions(3);
 }
 
 // Compress a sorted unique code-point list into chafa's --symbols range syntax
@@ -209,10 +191,13 @@ async function singleRun(atlas: Atlas, symbols: string, opts: MatchOptions): Pro
 // engines' grids so every sub-cell glyph (incl. chafa's braille/sextant picks) is scored on
 // identical synth masks. chafa's symbol repertoire is the union of our atlas cps + the family
 // codepoints, so chafa may pick the very braille/sextant classes families gave us. Fair both ways.
-async function familiesRun(baseAtlas: Atlas, augAtlas: Atlas, symbols: string, opts: MatchOptions): Promise<void> {
+async function familiesRun(baseAtlas: Atlas, augAtlas: Atlas, symbols: string, opts: MatchOptions, strict: boolean): Promise<void> {
   const space = opts.space ?? 'gamma';
-  console.log(`FAMILIES fairness run: Q${opts.quality} space=${space} gateTau=${opts.gateTau} families=[${(opts.families ?? []).join(',')}]`);
-  console.log(`atlas ${baseAtlas.glyphs.length} → augmented ${augAtlas.glyphs.length} glyphs; chafa symbols include braille+sextant\n`);
+  const grant = strict
+    ? 'braille only (STRICTLY-FAIR: sextant dropped from BOTH engines — chafa emits none anyway)'
+    : 'braille+sextant (full-capability; sextant is a verified chafa no-op)';
+  console.log(`FAMILIES ${strict ? 'strictly-fair' : 'full-capability'} run: Q${opts.quality} space=${space} gateTau=${opts.gateTau} families=[${(opts.families ?? []).join(',')}]`);
+  console.log(`atlas ${baseAtlas.glyphs.length} → augmented ${augAtlas.glyphs.length} glyphs; chafa granted ${grant}\n`);
   console.log('| image | ours+families | chafa builtin (best raster) | chafa DejaVu (best raster) |');
   console.log('|---|---|---|---|');
   const ctxs = await buildContexts(augAtlas, symbols); // chafa scored via augmented raster
@@ -228,8 +213,8 @@ async function familiesRun(baseAtlas: Atlas, augAtlas: Atlas, symbols: string, o
   const n = ctxs.length, mO = sO / n, mB = sB / n, mD = sD / n, chafaBest = Math.max(mB, mD);
   console.log(`| **mean** | **${fmt(mO)}** | **${fmt(mB)}** | **${fmt(mD)}** |`);
   const pass = mO > chafaBest;
-  console.log(`\nchafa best (granted braille+sextant) mean SSIM ${fmt(chafaBest)} · ours+families ${fmt(mO)}`);
-  console.log(`GATE (families, fair both ways): ${pass ? 'PASS' : 'FAIL'} (ours ${pass ? '>' : '<='} chafa best by ${(mO - chafaBest >= 0 ? '+' : '')}${(mO - chafaBest).toFixed(4)})`);
+  console.log(`\nchafa best (granted ${grant}) mean SSIM ${fmt(chafaBest)} · ours+families ${fmt(mO)}`);
+  console.log(`GATE (families, ${strict ? 'strictly-fair' : 'full-capability'}): ${pass ? 'PASS' : 'FAIL'} (ours ${pass ? '>' : '<='} chafa best by ${(mO - chafaBest >= 0 ? '+' : '')}${(mO - chafaBest).toFixed(4)})`);
   process.exit(pass ? 0 : 1);
 }
 
@@ -345,6 +330,7 @@ async function main(): Promise<void> {
       images: { type: 'string' },
       charset: { type: 'string', default: 'blocks' },
       families: { type: 'boolean', default: false },
+      strict: { type: 'boolean', default: false }, // §6 strictly-fair families subset (atlas + braille only)
       collapse: { type: 'string' },
     },
   });
@@ -366,17 +352,22 @@ async function main(): Promise<void> {
   }
 
   if (values.families) {
-    const fams = buildFamilies(M3_FAMS, atlas.cellW, atlas.cellH);
+    // §6: full-capability grants chafa braille+sextant (sextant a no-op) and lets OURS use all
+    // three families; --strict restricts BOTH engines to the demonstrably-shared repertoire
+    // (atlas + braille), i.e. drops sextant from ours' families AND from chafa's symbol grant.
+    const strict = values.strict === true;
+    const useFams = strict ? M3_FAMS_STRICT : M3_FAMS;
+    const fams = buildFamilies(useFams, atlas.cellW, atlas.cellH, atlas.inkMin, atlas.inkMax);
     const aug = augmentAtlas(atlas, fams);
     const famCps = new Set<number>(atlas.glyphs.map((g) => g.cp));
     for (const f of fams) for (const ch of f.ch) famCps.add(ch.codePointAt(0)!);
     const famSymbols = toSymbolArg([...famCps]);
-    const opts = baseOpts();
+    const opts = baseOpts(); // §5: production defaults (gateTau 2e-5)
     opts.quality = parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4;
     opts.space = values.space === 'linear' ? 'linear' : 'gamma';
-    opts.gateTau = values['gate-tau'] !== undefined ? parseFloat(values['gate-tau']) : 2e-5; // §1 chosen default
-    opts.families = M3_FAMS;
-    await familiesRun(atlas, aug, famSymbols, opts);
+    if (values['gate-tau'] !== undefined) opts.gateTau = parseFloat(values['gate-tau']);
+    opts.families = useFams;
+    await familiesRun(atlas, aug, famSymbols, opts, strict);
     return;
   }
 
