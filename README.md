@@ -49,24 +49,33 @@ optimizes the exact pixels it is graded on.
 
 | image | ours (Q3) | chafa (best) |
 |---|---|---|
-| sphere | 0.9802 | **0.9832** |
-| torus | 0.9814 | **0.9821** |
-| spheres | **0.9827** | 0.9783 |
-| DamagedHelmet | **0.8651** | 0.8603 |
-| FlightHelmet | **0.9710** | 0.9697 |
-| BoomBox | **0.9277** | 0.9251 |
-| **mean** | **0.9513** | **0.9498** |
+| sphere | **0.9834** | 0.9832 |
+| torus | **0.9824** | 0.9821 |
+| spheres | **0.9846** | 0.9783 |
+| DamagedHelmet | **0.8677** | 0.8603 |
+| FlightHelmet | **0.9718** | 0.9697 |
+| BoomBox | **0.9301** | 0.9251 |
+| **mean** | **0.9533** | **0.9498** |
 
 **Honest scope.** This validates only the **2D continuous-coverage least-squares
 margin** — both engines are re-rasterized through the same font, and it says
-nothing yet about the 3D pipeline. chafa still edges the two smooth synthetic
-renders (sphere, torus); ours wins all three textured Khronos renders and the
-mean by **+0.0015**, and the margin is *larger* on textured, edge-dense content —
-exactly where continuous coverage should help. Full protocol, symbol-mapping
-fairness decisions, and the masked-SSIM localization are in
-[bench/README.md](bench/README.md).
+nothing yet about the 3D pipeline. At production defaults ours wins all six images
+and the mean by **+0.0035**, and the margin is *larger* on textured, edge-dense
+content (DamagedHelmet +0.0074) — exactly where continuous coverage should help.
+Full protocol, symbol-mapping fairness decisions, and the masked-SSIM localization
+are in [bench/README.md](bench/README.md).
 
-Reproduce:
+**Synthesized families (M3).** Adding the exact-region block/braille families
+(`--families`) widens the honest, strictly-fair margin — atlas + braille granted to
+**both** engines — to **+0.0034**.[^fam] The gain is the region solver, not the
+repertoire: chafa declines the braille it is handed.
+
+[^fam]: A full-capability run reports **+0.0058**, but that credits ours for the
+    U+1FB00 sextant range chafa 1.18.2 emits zero glyphs from; the strictly-fair
+    +0.0034 is the number we stand behind. Full record in
+    [docs/M3-RESULTS.md](docs/M3-RESULTS.md).
+
+Reproduce (no flags = production defaults):
 
 ```bash
 npx tsx bench/chafa-gate.ts --images sphere,torus,spheres,DamagedHelmet,FlightHelmet,BoomBox
@@ -94,7 +103,7 @@ and the live SSIM updates.
 | Q2 | + foreground color fit (background fixed) | TUI-insertion default |
 | Q3 | + foreground/background two-color fit | highest fidelity (CLI default) |
 | Q4 | + edge / multi-scale loss | contour preservation |
-| Q5 | + 3D-aware priors (silhouette, id-dither barrier, family selection) | full pipeline — in progress (M3) |
+| Q5 | + 3D-aware priors: synthesized family selection (shipped); silhouette/contour priors (published null) | family solver shipped (M3) |
 
 The near-zero SSIM at Q0–Q2 is real, not a bug: those rungs paint on a fixed
 (black) background, so against a scene that has a gradient background their score
@@ -156,10 +165,13 @@ Roadmap milestones (full plan in [DESIGN.md §12](DESIGN.md)):
   live SSIM, permalink, PNG export. The matcher runs on the CPU in a Web Worker;
   the WebGPU path is deferred to M2.5 (no headless adapter in CI). Playwright
   E2E: 8/8.
-- **M3 — in progress.** 3D-aware quality (Q5): silhouette / crease orientation
-  priors, object-id dither barrier, contour DP.
+- **M3 — shipped.** Gate redesign (τ 2e-5) + synthesized ideal-mask families
+  (quadrant/sextant/braille, exact region solver) lift the chafa gate to a
+  strictly-fair **+0.0034** and win all six images; the silhouette/orientation and
+  contour-DP cross-cell priors were measured and **published as a null** (edgeSSIM
+  1/6, 0/6) — DESIGN §4.3 retracted. See [docs/M3-RESULTS.md](docs/M3-RESULTS.md).
 
-Unit tests: `npx vitest run` (66 passing). E2E: `npm run e2e` (8/8).
+Unit tests: `npx vitest run` (100 passing). E2E: `npm run e2e` (8/8).
 
 The founding design document is [DESIGN.md](DESIGN.md) — including the honest
 prior-art table and the forbidden-claims list that constrains all copy here.

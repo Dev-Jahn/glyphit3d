@@ -25,10 +25,11 @@ Verified: `tools/chafa/chafa --version` → `Chafa version 1.18.2`.
 Config: DejaVu Sans Mono @ 16px, `blocks` charset, 120 columns (rows derived from
 each image's aspect and the 10×19 cell → 63 rows for the 512×512 benchmarks).
 
-- **ours** — `matchGrid(..., Q3)` with **spec-default** `MatchOptions`
-  (`space 'gamma'` — predict-terminal, the project default; `edgeLambda 0.35`,
-  `gateTau 2e-4`, `mdlLambda 0.02`, `fixedBg [0,0,0]`, `fixedFg [1,1,1]`). No
-  tuning: Q3 is run exactly as the ladder/CLI run it.
+- **ours** — `matchGrid(..., Q3)` with **production-default** `MatchOptions`
+  sourced from `defaultOptions(3)` (`space 'gamma'` — predict-terminal, the project
+  default; `edgeLambda 0.35`, `gateTau 2e-5` — M3 gate redesign, was `2e-4`;
+  `mdlLambda 0.02`, `fixedBg [0,0,0]`, `fixedFg [1,1,1]`). No tuning: the **no-flag
+  reproduction command measures exactly the shipped defaults**, run as the ladder/CLI run it.
 - **chafa builtin** — `chafa -w 9 --fill none --symbols <set> --colors full
   --size 120x63 --font-ratio 10/19 -f symbols img.png`, using chafa's own
   internal glyph coverage model.
@@ -77,11 +78,15 @@ Why code-point-exact rather than chafa's symbol *classes*
    almost never leaves our repertoire (0, 1, and 5 unrenderable cells out of
    7560 on the three images). So the mapping choice does **not** move the verdict.
 
-Note on excluded symbol classes: chafa's native edge cases are `sextant`,
-`wedge`, and other Symbols-for-Legacy-Computing (U+1FB00…). DejaVu Sans Mono
-contains none of them, so neither engine can use them — excluding them is fair,
-not a handicap. `wide` (double-cell) glyphs are likewise absent: our atlas keeps
-only mono-advance glyphs, so the repertoire is single-cell by construction.
+Note on symbol classes — updated for M3 synthesized families. The base `blocks`
+atlas above is the repertoire the M0 no-flag gate compares. chafa's native edge
+cases — `sextant`, `wedge`, and other Symbols-for-Legacy-Computing (U+1FB00…) —
+are absent from DejaVu Sans Mono, so the base comparison excludes them fairly.
+**M3 adds synthesized ideal-mask families** (quadrant / sextant / braille, DESIGN
+§3.6) that *both* engines are graded on via identical synth masks; the fairness of
+that grant — and why sextant is a verified chafa no-op — is spelled out in the
+families-fairness section below. `wide` (double-cell) glyphs remain absent: our
+atlas keeps only mono-advance glyphs, so the repertoire is single-cell by construction.
 
 `--font-ratio 10/19` is passed to chafa so its symbol selection assumes the same
 pixel aspect as our 10×19 cell (fair geometry, matching our renderer).
@@ -124,9 +129,10 @@ How this went from red to green, in order:
 3. **Fix — predict-terminal `gamma` mode → PASS, +0.0003, defaults intact.**
    Fitting *and* compositing in the same gamma-encoded space the terminal
    actually blends in (DESIGN §3.1) lifts ours to **0.9812** with **no other knob
-   touched** (`gateTau 2e-4`, `mdlLambda 0.02`, `edgeLambda 0.35` all unchanged).
-   This is now the project-wide default; `--space linear` remains for the bake
-   path (PNG/HTML). Fit space and composite space are always paired.
+   touched** (`gateTau 2e-4` at the time — M3 later moved it to `2e-5`;
+   `mdlLambda 0.02`, `edgeLambda 0.35` unchanged). The `gamma` space is now the
+   project-wide default; `--space linear` remains for the bake path (PNG/HTML).
+   Fit space and composite space are always paired.
 
 4. **Rejected — `gateTau 0` (+0.0030).** Disabling the contrast gate scores
    higher still (run C below, **0.9840**), but the gate is the washout /
@@ -178,7 +184,7 @@ spec-default options (unchanged).
 ours (0.9812 → 0.9814); the net honest margin narrows to **+0.0002** but stays
 green. This is a thinner, fairer margin than the pre-correction +0.0003.
 
-#### Corrected-protocol verdict — 6 images (3 synthetic + 3 Khronos zoo)
+#### Corrected-protocol verdict — 6 images (3 synthetic + 3 Khronos zoo), production defaults
 
 Adds the DESIGN §10 Khronos screenshot renders (DamagedHelmet, FlightHelmet,
 BoomBox), fetched reproducibly by `scripts/fetch-bench-images.ts` (gitignored
@@ -186,21 +192,52 @@ BoomBox), fetched reproducibly by `scripts/fetch-bench-images.ts` (gitignored
 for the continuous-coverage thesis; the textured Khronos renders are where the
 margin widens.
 
+**Production defaults (M3).** The harness now sources `defaultOptions(3)`, so the
+**no-flag reproduction command below measures exactly the shipped defaults**
+(`gateTau 2e-5`, `space 'gamma'`). The M3 gate redesign (τ `2e-4` → `2e-5`, DESIGN
+§3.4) lifted ours from the pre-M3 mean `0.9513` (+0.0015; that gateTau-2e-4 run is
+recorded in `bench/out/gate-sweep.md`) to `0.9533`, without touching chafa:
+
 | image | ours Q3 (gamma) | chafa builtin (best raster) | chafa DejaVu (best raster) |
 |---|---|---|---|
-| sphere | 0.9802 | 0.9832 (linear) | 0.9830 (linear) |
-| torus | 0.9814 | 0.9821 (gamma) | 0.9820 (gamma) |
-| spheres | 0.9827 | 0.9783 (linear) | 0.9779 (linear) |
-| DamagedHelmet | 0.8651 | 0.8603 (gamma) | 0.8568 (gamma) |
-| FlightHelmet | 0.9710 | 0.9697 (gamma) | 0.9691 (gamma) |
-| BoomBox | 0.9277 | 0.9251 (gamma) | 0.9218 (gamma) |
-| **mean** | **0.9513** | **0.9498** | **0.9484** |
+| sphere | 0.9834 | 0.9832 (linear) | 0.9830 (linear) |
+| torus | 0.9824 | 0.9821 (gamma) | 0.9820 (gamma) |
+| spheres | 0.9846 | 0.9783 (linear) | 0.9779 (linear) |
+| DamagedHelmet | 0.8677 | 0.8603 (gamma) | 0.8568 (gamma) |
+| FlightHelmet | 0.9718 | 0.9697 (gamma) | 0.9691 (gamma) |
+| BoomBox | 0.9301 | 0.9251 (gamma) | 0.9218 (gamma) |
+| **mean** | **0.9533** | **0.9498** | **0.9484** |
 
-**Verdict: PASS**, ours − chafa best = **+0.0015**. Ours wins every Khronos image
-(DamagedHelmet +0.0048, FlightHelmet +0.0013, BoomBox +0.0026): the
-continuous-coverage margin is *larger* on textured/edge-dense content than on the
-smooth synthetic renders. Reproduce with
-`npx tsx bench/chafa-gate.ts --images sphere,torus,spheres,DamagedHelmet,FlightHelmet,BoomBox`.
+**Verdict: PASS**, ours − chafa best = **+0.0035**. With the gate redesign ours now
+wins **every** image, including the two smooth synthetics it previously lost
+(sphere +0.0002, torus +0.0003); the Khronos lead widens (DamagedHelmet +0.0074,
+FlightHelmet +0.0021, BoomBox +0.0050) — the continuous-coverage margin is *larger*
+on textured/edge-dense content. Reproduce with **no flags** (production defaults):
+
+```bash
+npx tsx bench/chafa-gate.ts --images sphere,torus,spheres,DamagedHelmet,FlightHelmet,BoomBox
+```
+
+#### Families fairness — synthesized ideal-mask families (M3, DESIGN §3.6)
+
+M3 adds synthesized ideal-mask families (quadrant / sextant / braille) as an exact
+region solver, independent of font coverage. Enabling them (`--families`) lifts
+ours to **0.9556** for a **+0.0058** margin — but that credits ours for the U+1FB00
+sextant range that chafa 1.18.2 emits **zero** glyphs from (verified: the
+sextant/legacy/all symbol classes and the raw codepoint range all yield none). On
+the **strictly-fair** shared repertoire (`--families --strict`: atlas + braille
+only, granted to **both** engines) the honest margin is **+0.0034** (ours 0.9532).
+
+The strictly-fair **+0.0034** is the headline number; the full-capability **+0.0058**
+is a footnote conditioned on the sextant no-op. Either way families is a robust win
+— the gain is the **exact region solver, not the repertoire** (chafa declines the
+braille it is granted). Both engines' sub-cell picks are re-rasterized through the
+identical augmented synth masks, so every glyph is scored on the same pixels.
+
+```bash
+npx tsx bench/chafa-gate.ts --images sphere,torus,spheres,DamagedHelmet,FlightHelmet,BoomBox --families          # full-capability +0.0058
+npx tsx bench/chafa-gate.ts --images sphere,torus,spheres,DamagedHelmet,FlightHelmet,BoomBox --families --strict # strictly-fair  +0.0034
+```
 
 #### Full experiment matrix
 
@@ -254,11 +291,14 @@ shaded renders our M0 optimizer now edges a mature, heavily-optimized reference
 tool (chafa 1.18.2) under a scrupulously fair, identical-repertoire,
 identical-renderer comparison — a genuine, if narrow, M0 win.
 
-**(b) Known open gap — object/lit cells.** The masked-SSIM table shows the PASS
-comes entirely from the **background** (ours gamma **0.9938** vs chafa **0.9910**);
-on **object** cells chafa still leads by **~0.004–0.005** mean (0.9431 vs
-~0.9385), and *neither* the gamma fix nor `gateTau 0` moves that number. This is
-recorded as an **open problem** (DESIGN §15), **not tuned away**.
+**(b) Object/lit-cell gap — closed in M3.** The M0 masked-SSIM table above showed
+the PASS came entirely from the **background** (ours gamma **0.9938** vs chafa
+**0.9910**), with chafa leading **object** cells by ~0.004–0.005 (recorded as the
+DESIGN §15.7 open problem, **not tuned away** at the time). **M3 closes it**: the
+gate redesign recovers synthetic object-cell SSIM (**+0.0056**) and synthesized
+families add **+0.015–0.020** on textured object cells, so ours now leads the
+6-image gate on **every** image. Full record in
+[docs/M3-RESULTS.md](../docs/M3-RESULTS.md); DESIGN §15.7 marked resolved.
 
 ## Files
 
