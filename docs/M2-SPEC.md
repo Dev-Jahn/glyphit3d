@@ -88,8 +88,10 @@ Plain DOM/TS, one dark stylesheet, no framework.
 or preview build; NOT part of vitest):
 1. Page loads, default torus knot renders (canvas non-blank via pixel probe).
 2. Ladder: Q0 → Q3 produces different grids and SSIM(Q3) > SSIM(Q0); badge updates.
-3. Charset switch to braille loads profile and re-renders (glyph repertoire in
-   the ANSI export changes).
+3. Charset switch blocks → ascii loads profile and re-renders (glyph repertoire in
+   the ANSI export changes: blocks carries U+2500–259F box/block glyphs, ascii none).
+   ((2026-07-05) braille preset is font-coverage-dependent; DejaVu has none — see
+   DESIGN §15.7 note.)
 4. ANSI export: non-empty, starts with ESC, row count == rows; JSON export
    validates against the §3 shape; PNG download non-empty.
 5. Scrubber divider drag changes the composite (pixel probe both sides).

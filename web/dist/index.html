@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ascii-3d — interactive demo</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #05070a; color: #d7dde5; font: 13px/1.5 ui-monospace, monospace; }
+    header { padding: 10px 14px; border-bottom: 1px solid #1a2029; }
+    header h1 { margin: 0; font-size: 14px; font-weight: 600; }
+    #stage { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px; }
+    figure { margin: 0; }
+    figcaption { color: #7b8794; margin-bottom: 6px; }
+    canvas { image-rendering: pixelated; background: #05070a; width: 480px; height: auto; border: 1px solid #1a2029; }
+    #perf { padding: 8px 14px; color: #8fa1b3; border-top: 1px solid #1a2029; white-space: pre-wrap; }
+    #ssim { font-weight: 700; color: #7fd6a2; }
+  </style>
+  <script type="module" crossorigin src="./assets/index-u24nF9pE.js"></script>
+</head>
+<body>
+  <header><h1>ascii-3d — SSIM <span id="ssim">—</span></h1></header>
+  <div id="stage">
+    <figure><figcaption>native render</figcaption><canvas id="scene"></canvas></figure>
+    <figure><figcaption>glyph raster</figcaption><canvas id="raster"></canvas></figure>
+  </div>
+  <div id="perf">—</div>
+</body>
+</html>

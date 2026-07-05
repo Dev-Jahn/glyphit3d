@@ -6,3 +6,4 @@ tools/
 bench/images/
 bench/aov/
 bench/zoo/
+.playwright-mcp/
