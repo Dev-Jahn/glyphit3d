@@ -3,14 +3,17 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildAtlas } from '../src/atlas/atlas.js';
-import { matchGrid } from '../src/core/match.js';
+import { matchGrid, contourPostPass } from '../src/core/match.js';
 import { loadLinear, loadRaw } from '../src/image/image-io.js';
 import { rasterizeGrid } from '../src/render/raster.js';
 import { savePng } from '../src/render/raster-io.js';
 import { ssim } from '../src/metric/ssim.js';
+import { edgeSSIM, type EdgeBand } from '../src/metric/edge-ssim.js';
 import { luma, linearToSrgb } from '../src/core/color.js';
-import { maskedSsim } from '../bench/masked-ssim.js';
-import type { Atlas, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
+import { resampleArea } from '../src/image/image.js';
+import { maskedSsim, objectMask, otsuThreshold, cellMeanLuma01 } from '../bench/masked-ssim.js';
+import { buildFamilies, type Family, type FamilyName } from '../src/atlas/families.js';
+import type { Atlas, Glyph, Grid, LinearImage, MatchOptions } from '../src/core/types.js';
 
 // M1-SPEC §4: the ablation harness. Per zoo model, 4 runs (base / +split / +antibleed /
 // +both) at a κ chosen from a FIXED sweep {0.02,0.05,0.1}. Reports overall,
@@ -217,7 +220,358 @@ function composeH(panels: LinearImage[], gap = 6): LinearImage {
 const f = (v: number) => (Number.isNaN(v) ? '  n/a ' : v.toFixed(4));
 const d = (v: number) => (Number.isNaN(v) ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(4));
 
+// ============================================================================
+// M3-SPEC §3 contour ablation (CONTOUR-INT wiring). Activated by --orient-kappa V
+// and/or --contour; runs base / +orient / +contour / +all per model and reports
+// overall SSIM (the §3 guard) alongside edgeSSIM (§3.5, the primary contour metric)
+// on the boundary band. The full 3-value sweeps + verdicts are phase-3 ABLATION's
+// job — this provides the wiring and a single-point measurement.
+// ============================================================================
+function parseOrientKappa(): number | null {
+  const i = process.argv.indexOf('--orient-kappa');
+  if (i < 0) return null;
+  const k = Number(process.argv[i + 1]);
+  if (!Number.isFinite(k) || k < 0) throw new Error(`--orient-kappa must be ≥ 0, got ${process.argv[i + 1]}`);
+  return k;
+}
+function parseContourKappa(): number {
+  const i = process.argv.indexOf('--contour-kappa');
+  if (i < 0) return 0.15;
+  const k = Number(process.argv[i + 1]);
+  if (!Number.isFinite(k) || k < 0) throw new Error(`--contour-kappa must be ≥ 0, got ${process.argv[i + 1]}`);
+  return k;
+}
+
+// per-pixel coverage [0,1] → per-cell mean (contour polylines) and boundary cells
+// (coverage crosses 0.5 inside the cell → the edgeSSIM band).
+function coverageGrids(covPix: Float32Array, w: number, h: number, cellW: number, cellH: number) {
+  const cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
+  const cellMean = new Float32Array(cols * rows);
+  const boundary = new Uint8Array(cols * rows);
+  let count = 0;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    let s = 0, mn = Infinity, mx = -Infinity;
+    for (let ly = 0; ly < cellH; ly++) { const gy = r * cellH + ly; for (let lx = 0; lx < cellW; lx++) { const v = covPix[gy * w + (c * cellW + lx)]!; s += v; if (v < mn) mn = v; if (v > mx) mx = v; } }
+    cellMean[r * cols + c] = s / (cellW * cellH);
+    if (mn < 0.5 && mx >= 0.5) { boundary[r * cols + c] = 1; count++; }
+  }
+  return { cellMean, boundary, cols, rows, count };
+}
+
+async function contourMain(orientKappa: number, doContour: boolean, contourKappa: number): Promise<void> {
+  await mkdir(OUT, { recursive: true });
+  const models = MODELS.filter((m) => existsSync(join(AOV, m, 'meta.json')));
+  const atlas = await buildAtlas(FONT, 16, 'blocks');
+  console.log(`contour-ablate: orientKappa=${orientKappa} contour=${doContour} κ_c=${contourKappa} on ${models.join(', ')}`);
+
+  const runCfg = (ref: LinearImage, cellMean: Float32Array, band: EdgeBand, count: number, o: MatchOptions, contour: boolean) => {
+    const grid = matchGrid(ref, atlas, o);
+    if (contour) contourPostPass(grid, atlas, cellMean, contourKappa);
+    const out = rasterizeGrid(grid, atlas, SPACE);
+    return { overall: ssim(out, ref), edge: count > 0 ? edgeSSIM(out, ref, band) : NaN };
+  };
+
+  const L: string[] = [];
+  L.push('# M3 contour ablation (M3-SPEC §3, CONTOUR-INT wiring)');
+  L.push('');
+  L.push(`- atlas: DejaVu Sans Mono @16, blocks, cell ${atlas.cellW}x${atlas.cellH}; space ${SPACE}, Q${QUALITY}`);
+  L.push(`- orientKappa=${orientKappa}, contour κ_c=${contourKappa}; edgeSSIM over the coverage-boundary band (§3.5)`);
+  L.push('');
+  L.push('| model | boundary cells | metric | base | +orient | +contour | +all |');
+  L.push('|---|---|---|---|---|---|---|');
+  for (const name of models) {
+    const dir = join(AOV, name);
+    const meta = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8')) as Meta;
+    const ref = await loadLinear(join(dir, 'shaded.png'));
+    const covRaw = (await loadRaw(join(dir, 'coverage.png'))).data;
+    const covPix = new Float32Array(covRaw.length);
+    for (let i = 0; i < covPix.length; i++) covPix[i] = covRaw[i]! / 255;
+    const cg = coverageGrids(covPix, ref.w, ref.h, meta.cellW, meta.cellH);
+    const band: EdgeBand = { boundaryCells: cg.boundary, cols: cg.cols, rows: cg.rows, cellW: meta.cellW, cellH: meta.cellH };
+    const base = runCfg(ref, cg.cellMean, band, cg.count, opts({}), false);
+    const orient = runCfg(ref, cg.cellMean, band, cg.count, opts({ orientKappa, aov: { coverage: covPix } }), false);
+    const contour = runCfg(ref, cg.cellMean, band, cg.count, opts({ topK: 8 }), true);
+    const all = runCfg(ref, cg.cellMean, band, cg.count, opts({ orientKappa, topK: 8, aov: { coverage: covPix } }), true);
+    L.push(`| ${name} | ${cg.count} | overall | ${f(base.overall)} | ${f(orient.overall)} | ${f(contour.overall)} | ${f(all.overall)} |`);
+    L.push(`| | | edgeSSIM | ${f(base.edge)} | ${f(orient.edge)} | ${f(contour.edge)} | ${f(all.edge)} |`);
+    console.log(`  ${name}: boundary=${cg.count} base edge=${f(base.edge)} +orient=${f(orient.edge)} +contour=${f(contour.edge)} +all=${f(all.edge)}`);
+  }
+  const md = L.join('\n');
+  await writeFile(join(OUT, `contour-ablate${QTAG}.md`), md);
+  console.log('\n' + md + `\n\nwrote ${join(OUT, `contour-ablate${QTAG}.md`)}`);
+}
+
+// ============================================================================
+// M3-SPEC §4 comprehensive ABLATION (phase 3). One command `tsx scripts/ablate.ts
+// --families` runs the full matrix (base / +families / +orient / +contour / +all)
+// on zoo 6 + synthetics 3 at the §1 GATE-chosen defaults (gateTau=2e-5, λ_mdl=0.02),
+// the fixed 3-value orientKappa & κ_c sweeps, the four §4 verify verdicts, and the
+// base-vs-+all side-by-side PNGs. Families are SYNTHESIZED (M3-SPEC §2) so their
+// braille/sextant glyphs are not in the blocks atlas — augmentAtlas() appends the
+// exact synth masks so rasterizeGrid/SSIM measure the reconstruction the solver
+// actually fit (DESIGN §5.6 "our own raster").
+// ============================================================================
+
+const GATE_TAU_M3 = 2e-5;   // §1 chosen gate default
+const MDL_M3 = 0.02;        // §1 chosen MDL default
+const M3_FAMS: FamilyName[] = ['quadrant', 'sextant', 'braille'];
+const ORIENT_SWEEP = [0.02, 0.05, 0.1];   // §3.3 fixed 3-value sweep
+const CONTOUR_SWEEP = [0.05, 0.15, 0.3];  // §3.4 fixed 3-value sweep
+const ORIENT_DEF = 0.05;                  // matrix default = sweep midpoint (not result-tuned)
+const CONTOUR_DEF = 0.15;
+
+function m3opts(over: Partial<MatchOptions>): MatchOptions {
+  return {
+    quality: QUALITY, space: SPACE, edgeLambda: 0.35, gateTau: GATE_TAU_M3, mdlLambda: MDL_M3,
+    fixedBg: [0, 0, 0], fixedFg: [1, 1, 1], ...over,
+  };
+}
+
+// Append synthesized family glyphs (ch=family codepoint, alpha=Σ region masks of the
+// pattern) for every pattern char NOT already in the atlas. Blocks/space keep their
+// FONT masks (which the text scan also used); the synth-only sextant (U+1FB00…) and
+// braille (U+2800…) codepoints get the exact masks solveFamily fit against, so a
+// families grid re-rasterizes faithfully. matchGrid is UNCHANGED (it uses its own
+// internal buildFamilies for the solve + the base atlas for the text scan); this
+// augmented atlas is only used at rasterize time.
+function augmentAtlas(atlas: Atlas, fams: Family[]): Atlas {
+  const have = new Set(atlas.glyphs.map((g) => g.ch));
+  const P = atlas.P;
+  const extra: Glyph[] = [];
+  for (const f of fams) {
+    const N = 1 << f.k;
+    for (let S = 0; S < N; S++) {
+      const ch = f.ch[S]!;
+      if (have.has(ch)) continue;
+      have.add(ch);
+      const alpha = new Float32Array(P), dxA = new Float32Array(P), dyA = new Float32Array(P);
+      for (let i = 0; i < f.k; i++) {
+        if (!((S >> i) & 1)) continue;
+        const ri = f.regions[i]!, dxi = f.dxR[i]!, dyi = f.dyR[i]!;
+        for (let p = 0; p < P; p++) { alpha[p] = alpha[p]! + ri[p]!; dxA[p] = dxA[p]! + dxi[p]!; dyA[p] = dyA[p]! + dyi[p]!; }
+      }
+      extra.push({ ch, cp: ch.codePointAt(0)!, alpha, dxA, dyA, sumA: f.sumA[S]!, sumAA: f.sumAA[S]!, gradAA: f.gradAA[S]!, ink: f.ink[S]! });
+    }
+  }
+  return { ...atlas, glyphs: [...atlas.glyphs, ...extra] };
+}
+
+// share of grid cells emitting a synthesized sub-cell glyph. Braille U+2800–28FF and
+// sextant U+1FB00–1FB3B are synth-ONLY (never in the blocks atlas), so their count is
+// an unambiguous families-usage signal. Quadrant/half/full block chars are reported
+// SEPARATELY because the text scan can also emit them (provenance is conflated there).
+function familyShare(grid: Grid): { braille: number; sextant: number; total: number } {
+  let braille = 0, sextant = 0;
+  for (const c of grid.cells) {
+    const cp = c.ch.codePointAt(0) ?? 0;
+    if (cp >= 0x2800 && cp <= 0x28ff) braille++;
+    else if (cp >= 0x1fb00 && cp <= 0x1fb3b) sextant++;
+  }
+  return { braille, sextant, total: grid.cells.length };
+}
+
+interface M3Img {
+  name: string; isSynth: boolean;
+  foot: LinearImage;         // reference at grid footprint (fit target + SSIM ref)
+  covPix: Float32Array;      // per-pixel coverage [0,1] (AOV for zoo; gamma-luma proxy for synth)
+  objMask: Uint8Array;       // object-cell pixel mask
+  cellMean: Float32Array;    // per-cell mean coverage (contour polylines)
+  band: EdgeBand;            // boundary-cell band for edgeSSIM
+  bandCount: number;
+}
+
+async function loadM3Zoo(name: string, cellW: number, cellH: number): Promise<M3Img> {
+  const dir = join(AOV, name);
+  const foot = await loadLinear(join(dir, 'shaded.png'));
+  const covRaw = (await loadRaw(join(dir, 'coverage.png'))).data;
+  const covPix = new Float32Array(covRaw.length);
+  for (let i = 0; i < covPix.length; i++) covPix[i] = covRaw[i]! / 255;
+  const objMask = objMaskOf(covRaw, foot.w, foot.h, cellW, cellH);
+  const cg = coverageGrids(covPix, foot.w, foot.h, cellW, cellH);
+  const band: EdgeBand = { boundaryCells: cg.boundary, cols: cg.cols, rows: cg.rows, cellW, cellH };
+  return { name, isSynth: false, foot, covPix, objMask, cellMean: cg.cellMean, band, bandCount: cg.count };
+}
+
+async function loadM3Synth(name: string, cellW: number, cellH: number): Promise<M3Img> {
+  const src = await loadLinear(join(ROOT, 'bench', 'images', `${name}.png`));
+  const COLS = 120;
+  const rows = Math.round(COLS * (src.h / src.w) * (cellW / cellH));
+  const foot = resampleArea(src, COLS * cellW, rows * cellH);
+  // 2D silhouette proxy: per-pixel gamma luma in [0,1] stands in for the (absent)
+  // coverage AOV, so orient/contour have an edge field. Documented as a proxy.
+  const covPix = new Float32Array(foot.w * foot.h);
+  for (let i = 0; i < covPix.length; i++) {
+    covPix[i] = linearToSrgb(luma(foot.data[i * 3]!, foot.data[i * 3 + 1]!, foot.data[i * 3 + 2]!)) / 255;
+  }
+  const otsu = otsuThreshold(cellMeanLuma01(foot, cellW, cellH));
+  const { mask } = objectMask(foot, cellW, cellH, otsu);
+  const cg = coverageGrids(covPix, foot.w, foot.h, cellW, cellH);
+  const band: EdgeBand = { boundaryCells: cg.boundary, cols: cg.cols, rows: cg.rows, cellW, cellH };
+  return { name, isSynth: true, foot, covPix, objMask: mask, cellMean: cg.cellMean, band, bandCount: cg.count };
+}
+
+interface M3Run { out: LinearImage; overall: number; obj: number; edge: number; braille: number; sextant: number }
+
+async function m3Main(): Promise<void> {
+  await mkdir(OUT, { recursive: true });
+  const atlas = await buildAtlas(FONT, 16, 'blocks');
+  const { cellW, cellH } = atlas;
+  const fams = buildFamilies(M3_FAMS, cellW, cellH);
+  const aug = augmentAtlas(atlas, fams);
+
+  const zooNames = MODELS.filter((m) => existsSync(join(AOV, m, 'meta.json')));
+  const synthNames = ['sphere', 'torus', 'spheres'].filter((n) => existsSync(join(ROOT, 'bench', 'images', `${n}.png`)));
+  const imgs: M3Img[] = [];
+  for (const n of zooNames) imgs.push(await loadM3Zoo(n, cellW, cellH));
+  for (const n of synthNames) imgs.push(await loadM3Synth(n, cellW, cellH));
+  console.log(`m3-ablate: zoo ${zooNames.join(', ')} + synth ${synthNames.join(', ')}`);
+
+  const measure = (grid: Grid, im: M3Img): M3Run => {
+    const out = rasterizeGrid(grid, aug, SPACE);
+    const fs = familyShare(grid);
+    return {
+      out, overall: ssim(out, im.foot), obj: maskedSsim(out, im.foot, im.objMask).obj,
+      edge: im.bandCount > 0 ? edgeSSIM(out, im.foot, im.band) : NaN,
+      braille: fs.braille, sextant: fs.sextant,
+    };
+  };
+
+  // 5-config matrix per image ------------------------------------------------------
+  const R = new Map<string, Record<'base' | 'fam' | 'orient' | 'contour' | 'all', M3Run>>();
+  for (const im of imgs) {
+    const base = measure(matchGrid(im.foot, atlas, m3opts({})), im);
+    const fam = measure(matchGrid(im.foot, atlas, m3opts({ families: M3_FAMS })), im);
+    const orient = measure(matchGrid(im.foot, atlas, m3opts({ orientKappa: ORIENT_DEF, aov: { coverage: im.covPix } })), im);
+    const gc = matchGrid(im.foot, atlas, m3opts({ topK: 8 }));
+    contourPostPass(gc, atlas, im.cellMean, CONTOUR_DEF);
+    const contour = measure(gc, im);
+    const ga = matchGrid(im.foot, atlas, m3opts({ families: M3_FAMS, orientKappa: ORIENT_DEF, topK: 8, aov: { coverage: im.covPix } }));
+    contourPostPass(ga, atlas, im.cellMean, CONTOUR_DEF);
+    const all = measure(ga, im);
+    R.set(im.name, { base, fam, orient, contour, all });
+    // base-vs-+all side-by-side PNG (zoo only — the 육안 deliverable of §4 criterion 3).
+    if (!im.isSynth) await savePng(composeH([im.foot, base.out, all.out]), join(OUT, `m3-${im.name}.png`));
+    console.log(`  ${im.name}: base=${f(base.overall)} +fam=${f(fam.overall)} (braille ${fam.braille}, sextant ${fam.sextant}) +orient=${f(orient.overall)} +contour=${f(contour.overall)} +all=${f(all.overall)}`);
+  }
+
+  // fixed sweeps (edgeSSIM, zoo only — synth uses a luma proxy so its edge band is noisy)
+  const orientSweep = new Map<string, number[]>(); // model → edge per orientKappa
+  const contourSweep = new Map<string, number[]>();
+  for (const im of imgs) {
+    if (im.isSynth || im.bandCount === 0) continue;
+    orientSweep.set(im.name, ORIENT_SWEEP.map((k) => {
+      const g = matchGrid(im.foot, atlas, m3opts({ orientKappa: k, aov: { coverage: im.covPix } }));
+      return edgeSSIM(rasterizeGrid(g, aug, SPACE), im.foot, im.band);
+    }));
+    contourSweep.set(im.name, CONTOUR_SWEEP.map((k) => {
+      const g = matchGrid(im.foot, atlas, m3opts({ topK: 8 }));
+      contourPostPass(g, atlas, im.cellMean, k);
+      return edgeSSIM(rasterizeGrid(g, aug, SPACE), im.foot, im.band);
+    }));
+    console.log(`  swept ${im.name}`);
+  }
+
+  // ---- markdown ----
+  const L: string[] = [];
+  L.push('# M3 ablation — families / orientation / contour (M3-SPEC §4)');
+  L.push('');
+  L.push(`- atlas: DejaVu Sans Mono @16, blocks (${atlas.glyphs.length} glyphs) + synth families [${M3_FAMS.join(', ')}] → augmented ${aug.glyphs.length} glyphs for raster; cell ${cellW}×${cellH}; space ${SPACE}, Q${QUALITY}`);
+  L.push(`- GATE defaults: gateTau=${GATE_TAU_M3}, mdlLambda=${MDL_M3} (M3-SPEC §1). orientKappa default=${ORIENT_DEF}, κ_c default=${CONTOUR_DEF} (sweep midpoints).`);
+  L.push(`- reference: zoo = shaded AOV at footprint; synth = 120-col resample. object-cell = coverage>0.3 (zoo) / Otsu (synth); edgeSSIM over the coverage-boundary band (§3.5).`);
+  L.push(`- **synthetics have no coverage AOV** — orient/contour there use a per-pixel gamma-luma silhouette proxy (documented; their edgeSSIM column is proxy-derived and excluded from the §3 zoo verdict).`);
+  L.push('');
+
+  const isSynthName = (n: string) => synthNames.includes(n);
+  const metricTable = (title: string, pick: (r: M3Run) => number) => {
+    L.push(`## ${title}`);
+    L.push('');
+    L.push('| image | base | +families | +orient | +contour | +all |');
+    L.push('|---|---|---|---|---|---|');
+    for (const im of imgs) {
+      const r = R.get(im.name)!;
+      const tag = im.isSynth ? ' *(synth)*' : '';
+      L.push(`| ${im.name}${tag} | ${f(pick(r.base))} | ${f(pick(r.fam))} | ${f(pick(r.orient))} | ${f(pick(r.contour))} | ${f(pick(r.all))} |`);
+    }
+    L.push('');
+  };
+  metricTable('Overall SSIM', (r) => r.overall);
+  metricTable('Object-cell SSIM', (r) => r.obj);
+  metricTable('edgeSSIM (§3.5 boundary band)', (r) => r.edge);
+
+  // family usage
+  L.push('## Synthesized-family usage (cells, +families run)');
+  L.push('');
+  L.push('| image | grid cells | braille | sextant | braille+sextant % |');
+  L.push('|---|---|---|---|---|');
+  for (const im of imgs) {
+    const r = R.get(im.name)!.fam;
+    const cells = Math.round((r.out.w / cellW) * (r.out.h / cellH));
+    L.push(`| ${im.name} | ${cells} | ${r.braille} | ${r.sextant} | ${((100 * (r.braille + r.sextant)) / cells).toFixed(2)}% |`);
+  }
+  L.push('');
+
+  // sweeps
+  const sweepTable = (title: string, sweep: Map<string, number[]>, vals: number[], label: string) => {
+    L.push(`## ${title}`);
+    L.push('');
+    L.push(`| model | base edge | ${vals.map((v) => `${label}=${v}`).join(' | ')} | best Δ |`);
+    L.push(`|---|---|${vals.map(() => '---').join('|')}|---|`);
+    for (const im of imgs) {
+      if (im.isSynth || !sweep.has(im.name)) continue;
+      const baseEdge = R.get(im.name)!.base.edge;
+      const row = sweep.get(im.name)!;
+      const best = Math.max(...row.map((e) => e - baseEdge));
+      L.push(`| ${im.name} | ${f(baseEdge)} | ${row.map((e) => f(e)).join(' | ')} | ${d(best)} |`);
+    }
+    L.push('');
+  };
+  sweepTable('orientKappa sweep — edgeSSIM (zoo, §3.3)', orientSweep, ORIENT_SWEEP, 'κ');
+  sweepTable('κ_c sweep — edgeSSIM (zoo, §3.4)', contourSweep, CONTOUR_SWEEP, 'κ_c');
+
+  // ---- §4 verify criteria ----
+  L.push('## M3 verify criteria (§4)');
+  L.push('');
+
+  // Criterion 2 — FAMILIES: overall improves on all 3 synth AND ≥4/6 zoo.
+  const synthImgs = imgs.filter((i) => i.isSynth);
+  const zooImgs = imgs.filter((i) => !i.isSynth);
+  const synthImproved = synthImgs.filter((i) => R.get(i.name)!.fam.overall - R.get(i.name)!.base.overall > 0);
+  const zooImproved = zooImgs.filter((i) => R.get(i.name)!.fam.overall - R.get(i.name)!.base.overall > 0);
+  const c2 = synthImproved.length === synthImgs.length && zooImproved.length >= 4;
+  L.push(`**Criterion 2 — FAMILIES (overall SSIM improves on all ${synthImgs.length} synth AND ≥4/6 zoo):** ${c2 ? 'PASS' : 'FAIL'}. synth ${synthImproved.length}/${synthImgs.length} [${synthImgs.map((i) => `${i.name} ${d(R.get(i.name)!.fam.overall - R.get(i.name)!.base.overall)}`).join(', ')}]; zoo ${zooImproved.length}/${zooImgs.length} [${zooImgs.map((i) => `${i.name} ${d(R.get(i.name)!.fam.overall - R.get(i.name)!.base.overall)}`).join(', ')}].`);
+  L.push('');
+
+  // Criterion 3 — CONTOUR: edgeSSIM improves ≥4/6 zoo at defaults, overall ≥ base−0.002.
+  const orientEdgeUp = zooImgs.filter((i) => R.get(i.name)!.orient.edge - R.get(i.name)!.base.edge > 0);
+  const contourEdgeUp = zooImgs.filter((i) => R.get(i.name)!.contour.edge - R.get(i.name)!.base.edge > 0);
+  const guardOrient = zooImgs.every((i) => R.get(i.name)!.orient.overall >= R.get(i.name)!.base.overall - 0.002);
+  const guardContour = zooImgs.every((i) => R.get(i.name)!.contour.overall >= R.get(i.name)!.base.overall - 0.002);
+  const c3orient = orientEdgeUp.length >= 4 && guardOrient;
+  const c3contour = contourEdgeUp.length >= 4 && guardContour;
+  const c3 = c3orient || c3contour;
+  L.push(`**Criterion 3 — CONTOUR (edgeSSIM improves ≥4/6 zoo at defaults, overall ≥ base−0.002):** ${c3 ? 'PASS' : 'FAIL'}.`);
+  L.push(`- +orient (κ=${ORIENT_DEF}): edgeSSIM up on ${orientEdgeUp.length}/6 [${zooImgs.map((i) => `${i.name} ${d(R.get(i.name)!.orient.edge - R.get(i.name)!.base.edge)}`).join(', ')}]; overall-guard ${guardOrient ? 'ok' : 'VIOLATED'} → ${c3orient ? 'PASS' : 'FAIL'}.`);
+  L.push(`- +contour (κ_c=${CONTOUR_DEF}): edgeSSIM up on ${contourEdgeUp.length}/6 [${zooImgs.map((i) => `${i.name} ${d(R.get(i.name)!.contour.edge - R.get(i.name)!.base.edge)}`).join(', ')}]; overall-guard ${guardContour ? 'ok' : 'VIOLATED'} → ${c3contour ? 'PASS' : 'FAIL'}.`);
+  L.push('');
+
+  L.push('## Side-by-side renders (base | +all)');
+  L.push('');
+  L.push('Panel order: **reference | base | +all**.');
+  L.push('');
+  for (const im of zooImgs) L.push(`- ![${im.name}](m3-${im.name}.png)`);
+  L.push('');
+
+  const md = L.join('\n');
+  await writeFile(join(OUT, 'ablate-m3.md'), md);
+  console.log('\n' + md);
+  console.log(`\nwrote ${join(OUT, 'ablate-m3.md')}`);
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes('--families')) { await m3Main(); return; }
+  const OK = parseOrientKappa();
+  const DC = process.argv.includes('--contour');
+  if (OK !== null || DC) { await contourMain(OK ?? 0, DC, parseContourKappa()); return; }
   await mkdir(OUT, { recursive: true });
   const models = MODELS.filter((m) => existsSync(join(AOV, m, 'meta.json')));
   console.log(`ablate: ${models.length} baked model(s): ${models.join(', ')}`);

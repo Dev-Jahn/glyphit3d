@@ -8,7 +8,11 @@ export function defaultOptions(quality: 0 | 1 | 2 | 3 | 4): MatchOptions {
     quality,
     space: 'gamma',
     edgeLambda: 0.35,
-    gateTau: 2e-4,
+    // M3-SPEC §1: the gate is a COMPUTE-SAVER, not a quality device — the exhaustive scan
+    // always contains the flat candidate (space's unconstrained fit is b=mean, SSE=E_AC),
+    // so lowering τ can only match-or-improve per-cell SSE. Default 2e-4 → 2e-5 skips only
+    // near-exactly-flat cells and recovers the smooth-interior deficit (see bench/out/gate-sweep.md).
+    gateTau: 2e-5,
     mdlLambda: 0.02,
     fixedBg: [0, 0, 0],
     fixedFg: [1, 1, 1],

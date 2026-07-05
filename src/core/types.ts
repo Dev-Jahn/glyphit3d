@@ -19,7 +19,18 @@ export interface Atlas {
 }
 
 export interface GridCell { ch: string; fg: [number, number, number] | null; bg: [number, number, number] | null } // sRGB 0..255 ints
-export interface Grid { cols: number; rows: number; cells: GridCell[]; cellW: number; cellH: number; font: string }
+
+// §3.4 topK candidate emitted per cell when MatchOptions.topK>0. glyphIdx indexes
+// atlas.glyphs (text scan only — families/gated cells emit their own single-entry
+// list); score is the SAME selection score that picked the cell winner (so cand[0]
+// == emitted glyph); F/B are the ALREADY-ENCODED sRGB u8 fg/bg for that glyph in the
+// current quality mode, so the contour post-pass can write a GridCell directly. This
+// interface is structurally identical to core/contour.ts's Candidate (kept separate
+// so contour.ts stays a standalone phase-1 module).
+export interface Candidate { glyphIdx: number; score: number; F: [number, number, number]; B: [number, number, number] }
+
+export interface Grid { cols: number; rows: number; cells: GridCell[]; cellW: number; cellH: number; font: string;
+  cands?: Candidate[][] } // per-cell topK (cols*rows), only when opts.topK>0 — consumed by the contour post-pass
 
 export type ColorMode = 'mono' | 'fg' | 'fg-bg'
 export interface MatchOptions {
@@ -36,8 +47,18 @@ export interface MatchOptions {
     shadingLuma?: Float32Array;  // gridW*gridH, WORKING-space luma of the albedo-free shading render (§4.1)
     objectId?: Uint16Array;      // gridW*gridH, per-mesh id, 0 = background (§4.2)
     albedo?: LinearImage;        // linear RGB, for the stylization variant only
+    coverage?: Float32Array;     // gridW*gridH, silhouette coverage [0,1] — drives the §3.2 edge field / boundary gate
   };
   splitSelection?: number;     // η ≥ 0, default 0 (off). §4.1 fidelity variant: extra shading-luma scoring channel.
   antibleedKappa?: number;     // κ ≥ 0, default 0 (off). §4.2 boundary-cell object-id correlation bonus.
   styleAlbedoColors?: boolean; // default false. §4.1 stylization variant: refit selected glyph colors on albedo.
+
+  // M3 synthesized families (M3-SPEC §2). default [] / absent → off, M0/M1 output
+  // byte-identical. When non-empty, each listed family's exact region solve competes
+  // with the text scan per cell in the same (SSE + λ_mdl·ink·scale) score space.
+  families?: ('quadrant' | 'sextant' | 'braille')[];
+
+  // M3 contour mechanisms (M3-SPEC §3). Both default off → output byte-identical.
+  orientKappa?: number;  // κ ≥ 0, §3.3 in-scan orientation prior on boundary cells (uses aov.coverage/objectId, else 2D luma fallback).
+  topK?: number;         // K ≥ 0, §3.4: also emit the top-K text candidates per cell into grid.cands (for the contour post-pass).
 }

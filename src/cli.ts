@@ -10,7 +10,7 @@ import { buildAtlas } from './atlas/atlas.js';
 import type { CHARSETS } from './atlas/charsets.js';
 import { loadLinear, loadRaw } from './image/image-io.js';
 import { resampleArea } from './image/image.js';
-import { matchGrid } from './core/match.js';
+import { matchGrid, contourPostPass } from './core/match.js';
 import { rampGrid } from './core/ramp.js';
 import { rasterizeGrid } from './render/raster.js';
 import { savePng } from './render/raster-io.js';
@@ -41,6 +41,9 @@ async function bakeCmd(): Promise<void> {
       split: { type: 'string', default: '0' },
       antibleed: { type: 'string', default: '0' },
       'style-albedo': { type: 'boolean', default: false },
+      'orient-kappa': { type: 'string', default: '0' },
+      contour: { type: 'boolean', default: false },
+      'contour-kappa': { type: 'string', default: '0.15' },
       o: { type: 'string' },
       html: { type: 'string' },
       png: { type: 'string' },
@@ -50,7 +53,7 @@ async function bakeCmd(): Promise<void> {
   });
   const target = positionals[0];
   if (!target) {
-    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const cols = parseInt(values.cols!, 10);
@@ -93,17 +96,31 @@ async function bakeCmd(): Promise<void> {
   const eta = parseFloat(values.split!);
   const kappa = parseFloat(values.antibleed!);
   const styleAlbedo = values['style-albedo']!;
+  const orientKappa = parseFloat(values['orient-kappa']!);
+  const contourKappa = parseFloat(values['contour-kappa']!);
+  const doContour = values.contour! && quality !== 0;
   const aov: NonNullable<MatchOptions['aov']> = {};
   if (eta > 0) aov.shadingLuma = await shadingLumaOf(req('shading.png'), space);
   if (kappa > 0) aov.objectId = Uint16Array.from((await loadRaw(req('objectid.png'))).data);
   if (styleAlbedo) aov.albedo = await loadLinear(req('albedo.png'));
+  // §3.2 silhouette coverage AOV (per-pixel [0,1]) drives the orientation edge field and
+  // the contour polylines; load once when either mechanism is on.
+  let coveragePix: Float32Array | undefined;
+  if (orientKappa > 0 || doContour) {
+    const cov = await loadRaw(req('coverage.png'));
+    coveragePix = new Float32Array(cov.data.length);
+    for (let i = 0; i < coveragePix.length; i++) coveragePix[i] = cov.data[i]! / 255;
+  }
   if (eta > 0) opts.splitSelection = eta;
   if (kappa > 0) opts.antibleedKappa = kappa;
   if (styleAlbedo) opts.styleAlbedoColors = true;
-  if (eta > 0 || kappa > 0 || styleAlbedo) opts.aov = aov;
+  if (orientKappa > 0) { aov.coverage = coveragePix; opts.orientKappa = orientKappa; }
+  if (doContour) opts.topK = 8;
+  if (eta > 0 || kappa > 0 || styleAlbedo || orientKappa > 0) opts.aov = aov;
 
   const t0 = performance.now();
   const grid = quality === 0 ? rampGrid(ref, atlas, opts) : matchGrid(ref, atlas, opts);
+  if (doContour) contourPostPass(grid, atlas, perCellMean(coveragePix!, ref.w, ref.h, atlas.cellW, atlas.cellH), contourKappa);
   const elapsed = performance.now() - t0;
 
   if (values.o) await writeFile(values.o, toAnsi(grid));
@@ -133,6 +150,28 @@ async function shadingLumaOf(path: string, space: 'linear' | 'gamma'): Promise<F
   return out;
 }
 
+// Per-cell mean of a per-pixel [0,1] scalar → cols*rows grid for the contour post-pass
+// (marching squares thresholds this at 0.5). Used both for the silhouette-coverage AOV
+// (bake) and the 2D luma proxy (image, no AOV).
+function perCellMean(field: Float32Array, w: number, h: number, cellW: number, cellH: number): Float32Array {
+  const cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
+  const out = new Float32Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    let s = 0;
+    for (let ly = 0; ly < cellH; ly++) { const gy = r * cellH + ly; for (let lx = 0; lx < cellW; lx++) s += field[gy * w + (c * cellW + lx)]!; }
+    out[r * cols + c] = s / (cellW * cellH);
+  }
+  return out;
+}
+
+// Working-space (gamma) luma in [0,1] per pixel — the 2D fallback silhouette proxy for
+// the contour pass when there is no coverage AOV.
+function lumaField01(ref: { w: number; h: number; data: Float32Array }): Float32Array {
+  const out = new Float32Array(ref.w * ref.h);
+  for (let i = 0; i < out.length; i++) out[i] = linearToSrgb(luma(ref.data[i * 3]!, ref.data[i * 3 + 1]!, ref.data[i * 3 + 2]!)) / 255;
+  return out;
+}
+
 async function main(): Promise<void> {
   if (argv[2] === 'bake') { await bakeCmd(); return; }
   const { values, positionals } = parseArgs({
@@ -144,6 +183,9 @@ async function main(): Promise<void> {
       charset: { type: 'string', default: 'blocks' },
       font: { type: 'string', default: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf' },
       'font-size': { type: 'string', default: '16' },
+      'orient-kappa': { type: 'string', default: '0' },
+      contour: { type: 'boolean', default: false },
+      'contour-kappa': { type: 'string', default: '0.15' },
       o: { type: 'string' },
       html: { type: 'string' },
       png: { type: 'string' },
@@ -153,7 +195,7 @@ async function main(): Promise<void> {
   });
 
   if (positionals[0] !== 'image' || !positionals[1]) {
-    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--orient-kappa N] [--contour --contour-kappa N] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const input = positionals[1];
@@ -171,7 +213,17 @@ async function main(): Promise<void> {
   const t0 = performance.now();
   const opts = defaultOptions(quality);
   opts.space = space;
+  // M3 §3.3/§3.4: orientation prior + contour post-pass. 2D image mode has no AOVs, so
+  // both fall back to the reference luma (orientation via the luma edge field internally,
+  // contour via a per-cell luma silhouette proxy). Q0 (ramp) has no per-cell candidates.
+  const orientKappa = parseFloat(values['orient-kappa']!);
+  const contourKappa = parseFloat(values['contour-kappa']!);
+  if (orientKappa > 0) opts.orientKappa = orientKappa;
+  if (values.contour && quality !== 0) opts.topK = 8;
   const grid = quality === 0 ? rampGrid(ref, atlas, opts) : matchGrid(ref, atlas, opts);
+  if (values.contour && quality !== 0) {
+    contourPostPass(grid, atlas, perCellMean(lumaField01(ref), ref.w, ref.h, atlas.cellW, atlas.cellH), contourKappa);
+  }
   const elapsed = performance.now() - t0;
 
   if (values.o) await writeFile(values.o, toAnsi(grid));
