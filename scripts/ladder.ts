@@ -3,13 +3,14 @@ import { createCanvas } from '@napi-rs/canvas';
 import { writeFile } from 'node:fs/promises';
 import type { LinearImage, Grid, Atlas } from '../src/core/types.js';
 import { buildAtlas } from '../src/atlas/atlas.js';
-import { loadLinear, resampleArea } from '../src/image/image.js';
+import { loadLinear } from '../src/image/image-io.js';
+import { resampleArea } from '../src/image/image.js';
 import { matchGrid } from '../src/core/match.js';
 import { rampGrid } from '../src/core/ramp.js';
 import { rasterizeGrid } from '../src/render/raster.js';
 import { ssim } from '../src/metric/ssim.js';
 import { linearToSrgb } from '../src/core/color.js';
-import { defaultOptions, gridRows } from '../src/cli.js';
+import { defaultOptions, gridRows } from '../src/core/options.js';
 
 const COLS = 120;
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';

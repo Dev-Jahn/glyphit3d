@@ -8,32 +8,21 @@ import { fileURLToPath } from 'node:url';
 import type { MatchOptions } from './core/types.js';
 import { buildAtlas } from './atlas/atlas.js';
 import type { CHARSETS } from './atlas/charsets.js';
-import { loadLinear, loadRaw, resampleArea } from './image/image.js';
+import { loadLinear, loadRaw } from './image/image-io.js';
+import { resampleArea } from './image/image.js';
 import { matchGrid } from './core/match.js';
 import { rampGrid } from './core/ramp.js';
-import { rasterizeGrid, savePng } from './render/raster.js';
+import { rasterizeGrid } from './render/raster.js';
+import { savePng } from './render/raster-io.js';
 import { toAnsi } from './render/ansi.js';
 import { toHtml } from './render/html.js';
 import { ssim } from './metric/ssim.js';
 import { luma, linearToSrgb } from './core/color.js';
 import { cellDiffHeatmap } from './metric/heatmap.js';
-
-export function defaultOptions(quality: 0 | 1 | 2 | 3 | 4): MatchOptions {
-  return {
-    quality,
-    space: 'gamma',
-    edgeLambda: 0.35,
-    gateTau: 2e-4,
-    mdlLambda: 0.02,
-    fixedBg: [0, 0, 0],
-    fixedFg: [1, 1, 1],
-  };
-}
-
-// rows = round(cols · (imgH/imgW) · cellW/cellH) — corrects for non-square cells.
-export function gridRows(cols: number, imgW: number, imgH: number, cellW: number, cellH: number): number {
-  return Math.max(1, Math.round((cols * (imgH / imgW) * cellW) / cellH));
-}
+import { defaultOptions, gridRows } from './core/options.js';
+// Re-exported for existing node-side importers (scripts/tests) that expect these
+// on cli.js; the pure definitions live in core/options.js for browser reuse.
+export { defaultOptions, gridRows } from './core/options.js';
 
 // M1-SPEC §4: `bake` — model|aov-dir → AOV-driven glyph match. A model file is
 // rendered to AOVs via scripts/bake-aov.ts (child process) first; an existing AOV

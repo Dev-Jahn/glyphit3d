@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import type { LinearImage } from '../src/core/types.js';
-import { savePng } from '../src/render/raster.js';
+import { savePng } from '../src/render/raster-io.js';
 
 // All shading done in linear RGB [0,1]; savePng encodes to sRGB.
 const N = 512;

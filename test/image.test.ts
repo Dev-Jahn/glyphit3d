@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { createCanvas } from '@napi-rs/canvas';
 import { srgbToLinear } from '../src/core/color.js';
 import type { LinearImage } from '../src/core/types.js';
-import { loadLinear, resampleArea, gradients } from '../src/image/image.js';
+import { loadLinear } from '../src/image/image-io.js';
+import { resampleArea, gradients } from '../src/image/image.js';
 
 function makeImage(w: number, h: number, fill: (x: number, y: number, c: number) => number): LinearImage {
   const data = new Float32Array(w * h * 3);
