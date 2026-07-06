@@ -44,7 +44,7 @@ const CSS = `
 /* --- scrubber hero --- */
 .scrub-stage {
   position: relative; width: 100%; border: 1px solid var(--line); background: #000;
-  overflow: hidden; touch-action: none; cursor: ew-resize; user-select: none;
+  overflow: hidden; touch-action: none; cursor: grab; user-select: none;
 }
 .scrub-canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
 .scrub-tag {
@@ -55,8 +55,12 @@ const CSS = `
 .scrub-tag-l { left: 10px; }
 .scrub-tag-r { right: 10px; color: var(--accent); }
 .scrub-handle {
-  position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
-  background: var(--accent); box-shadow: 0 0 10px rgba(127,214,162,0.6); pointer-events: none;
+  position: absolute; top: 0; bottom: 0; width: 18px; margin-left: -9px;
+  background: transparent; pointer-events: auto; cursor: ew-resize; touch-action: none;
+}
+.scrub-handle::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px;
+  background: var(--accent); box-shadow: 0 0 10px rgba(127,214,162,0.6);
 }
 .scrub-handle::after {
   content: "\\21C4"; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);

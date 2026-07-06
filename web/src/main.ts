@@ -32,7 +32,9 @@ const pipeline = new Pipeline();
 let atlas: Atlas | null = null;
 let currentCharset = '';
 let last: PipelineOutput | null = null;
-let busy = false;
+// Active-run counter, not a boolean: requestRematch holds one extra count across its
+// whole coalescing loop so busy never blips false between iterations. busy = count>0.
+let busyCount = 0;
 
 function profileUrl(charset: Charset): string {
   return new URL(`profiles/dejavu-16-${charset}.json`, document.baseURI).href;
@@ -48,7 +50,7 @@ async function ensureAtlas(charset: Charset): Promise<Atlas> {
 }
 
 async function rematch(): Promise<void> {
-  busy = true;
+  busyCount++;
   try {
     const a = await ensureAtlas(params.charset);
     scene.setOrbit(params.yaw, params.pitch);
@@ -63,14 +65,40 @@ async function rematch(): Promise<void> {
     ssimEl.textContent = out.ssim.toFixed(4);
     renderPerf(perfEl, out.timings);
   } finally {
-    busy = false;
+    busyCount--;
   }
 }
+
+// Coalescing single-flight for orbit-driven rematches: a request during an in-flight
+// run only marks the pose dirty; the running loop re-matches once more when it drains
+// (so the final pose always wins). The held count keeps busy true across the loop.
+let coalescing = false;
+let dirty = false;
+async function requestRematch(): Promise<void> {
+  if (coalescing) { dirty = true; return; }
+  coalescing = true;
+  busyCount++;
+  try {
+    do {
+      dirty = false;
+      await rematch();
+    } while (dirty);
+  } finally {
+    busyCount--;
+    coalescing = false;
+  }
+}
+
+scene.onOrbitMove = () => {
+  params.yaw = scene.yawDeg;
+  params.pitch = scene.pitchDeg;
+  void requestRematch();
+};
 
 scene.onOrbitEnd = () => {
   params.yaw = scene.yawDeg;
   params.pitch = scene.pitchDeg;
-  void rematch();
+  void requestRematch();
 };
 
 // Drag & drop a .glb/.gltf to replace the model.
@@ -100,7 +128,7 @@ declare global {
 window.__app = {
   rematch,
   setParams: (p) => { Object.assign(params, p); },
-  getState: () => ({ params: { ...params }, ssim: last ? last.ssim : null, busy }),
+  getState: () => ({ params: { ...params }, ssim: last ? last.ssim : null, busy: busyCount > 0 }),
   getOutput: () => last,
   scene,
 };

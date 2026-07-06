@@ -1,4 +1,5 @@
 import { app, onOutput, whenReady } from './bridge.js';
+import type { Scene } from '../scene.js';
 import { el } from './dom.js';
 import { injectStyles } from './styles.js';
 import { Scrubber } from './scrubber.js';
@@ -22,6 +23,11 @@ async function boot(): Promise<void> {
   const perf = document.getElementById('perf') as HTMLElement;
 
   const scrubber = new Scrubber(scene, raster, () => app().getOutput()?.grid ?? null);
+  // The scrubber stage doubles as an orbit surface (the divider only moves via its own
+  // handle now). Same-element pointermove listeners fire in registration order, so the
+  // scene has already re-rendered when the redraw below copies it into the left pane.
+  (app().scene as Scene).attachOrbit(scrubber.element);
+  scrubber.element.addEventListener('pointermove', (e) => { if (e.buttons & 1) scrubber.redraw(); });
   const ladder = new Ladder(ssim);
   const controls = new Controls();
   const exports = new Exports(raster);

@@ -43,6 +43,7 @@ export class Scene {
   yawDeg = 30;
   pitchDeg = -15;
   onOrbitEnd: (() => void) | null = null;
+  onOrbitMove: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     THREE.ColorManagement.enabled = true;
@@ -144,28 +145,36 @@ export class Scene {
     return ctx.getImageData(0, 0, gridW, gridH);
   }
 
-  private attachOrbit(canvas: HTMLCanvasElement): void {
-    let dragging = false;
+  // Orbit input, attachable to any surface (constructor: renderer canvas; UI: the
+  // scrubber stage). Per-call closure state keeps each attached surface independent.
+  // onOrbitMove fires after every drag re-render; onOrbitEnd on pointerup/cancel.
+  // Scoped to one pointerId: the stage is an ancestor of the divider handle, so a
+  // captured handle-drag pointer's moves bubble here — filtering by id stops a second
+  // finger's divider drag from also orbiting the camera.
+  attachOrbit(target: HTMLElement): void {
+    let activeId: number | null = null;
     let px = 0;
     let py = 0;
-    canvas.addEventListener('pointerdown', (e) => {
-      dragging = true; px = e.clientX; py = e.clientY;
-      canvas.setPointerCapture(e.pointerId);
+    target.addEventListener('pointerdown', (e) => {
+      if (activeId !== null) return;
+      activeId = e.pointerId; px = e.clientX; py = e.clientY;
+      target.setPointerCapture(e.pointerId);
     });
-    canvas.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
+    target.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== activeId) return;
       this.setOrbit(this.yawDeg + (e.clientX - px) * 0.5, this.pitchDeg - (e.clientY - py) * 0.5);
       px = e.clientX; py = e.clientY;
       this.placeCamera(this.camera.aspect);
       this.renderer.render(this.scene, this.camera);
+      this.onOrbitMove?.();
     });
     const end = (e: PointerEvent): void => {
-      if (!dragging) return;
-      dragging = false;
-      canvas.releasePointerCapture(e.pointerId);
+      if (e.pointerId !== activeId) return;
+      activeId = null;
+      target.releasePointerCapture(e.pointerId);
       this.onOrbitEnd?.();
     };
-    canvas.addEventListener('pointerup', end);
-    canvas.addEventListener('pointercancel', end);
+    target.addEventListener('pointerup', end);
+    target.addEventListener('pointercancel', end);
   }
 }

@@ -1,6 +1,6 @@
 // M2 E2E verify instrument (M2-SPEC §4, §5). Standalone tsx script — NOT vitest,
-// NOT @playwright/test. Drives the vite dev app (checks 1-7) and a vite build+preview
-// artifact (check 8) with plain `playwright` + node:assert, headless Chromium under
+// NOT @playwright/test. Drives the vite dev app (checks 1-8) and a vite build+preview
+// artifact (check 9) with plain `playwright` + node:assert, headless Chromium under
 // SwiftShader (no WebGPU here, by design — spec header). Run: `npm run e2e`.
 
 import assert from 'node:assert/strict';
@@ -47,6 +47,21 @@ async function afterRematch(page: Page, action: () => Promise<void>): Promise<vo
   await page.evaluate('window.__t = window.__app.getOutput()');
   await action();
   await page.waitForFunction('window.__app.getOutput() !== window.__t && !window.__app.getState().busy', { timeout: 60000 });
+}
+
+// Press the wipe divider by its handle (R3: only the handle moves the divider; the
+// stage body orbits). Re-reads the handle box each call — it tracks the current frac,
+// so a re-grab after a saturating drag lands on the handle at the edge, not the stage.
+// The stage clips its overflow, so at frac 0/1 the handle's bbox centre sits on the
+// clipped edge (a press there hits the stage → orbits); clamp the grab a few px into
+// the stage interior so it always lands on the (clipped) handle strip.
+async function grabHandle(page: Page): Promise<void> {
+  const hb = await page.locator('.scrub-handle').boundingBox();
+  const sb = await page.locator('.scrub-stage').boundingBox();
+  assert.ok(hb && sb, 'scrub-handle/scrub-stage not found');
+  const cx = Math.min(sb.x + sb.width - 3, Math.max(sb.x + 3, hb.x + hb.width / 2));
+  await page.mouse.move(cx, hb.y + hb.height / 2);
+  await page.mouse.down();
 }
 
 // These run in the browser (passed as functions so Playwright forwards args).
@@ -144,7 +159,7 @@ async function readDownload(page: Page, triggerSelectorText: string): Promise<Bu
   return readFile(path);
 }
 
-// --- the eight checks ------------------------------------------------------------
+// --- the nine checks -------------------------------------------------------------
 
 async function runDevChecks(page: Page, baseURL: string): Promise<void> {
   // Capture default-settings perf up front, on the pristine load (spec §4.7 / §5.2).
@@ -243,9 +258,9 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     // pointer-capture pins frac to exactly 1/0 so no sliver of the other source leaks in.
     // Inlined per side (no nested fn — see paneStats note on the __name helper).
 
-    // (a) dragging the divider changes the composite.
-    await page.mouse.move(box.x + box.width * 0.15, y);
-    await page.mouse.down();
+    // (a) dragging the divider changes the composite. Grab the handle (R3: the stage
+    // body now orbits; only the handle moves the divider).
+    await grabHandle(page);
     const hA = await page.evaluate(canvasHash, '.scrub-canvas');
     await page.mouse.move(box.x + box.width * 0.85, y, { steps: 4 });
     const hB = await page.evaluate(canvasHash, '.scrub-canvas');
@@ -257,8 +272,7 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     await page.mouse.move(box.x + box.width + 400, y, { steps: 4 }); // frac→1
     const R3 = await page.evaluate(paneStats);
     await page.mouse.up();
-    await page.mouse.move(box.x + box.width * 0.5, y);
-    await page.mouse.down();
+    await grabHandle(page);
     await page.mouse.move(box.x - 400, y, { steps: 4 }); // frac→0
     const L3 = await page.evaluate(paneStats);
     await page.mouse.up();
@@ -275,13 +289,11 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     // so the panes become distinguishable and a source SWAP / same-source-both-sides
     // (invisible at Q3) is caught: self≈0 but the OTHER source is far off.
     await afterRematch(page, () => page.locator('button.q-btn', { hasText: /^Q0$/ }).click());
-    await page.mouse.move(box.x + box.width * 0.5, y);
-    await page.mouse.down();
+    await grabHandle(page);
     await page.mouse.move(box.x + box.width + 400, y, { steps: 4 }); // frac→1
     const R0 = await page.evaluate(paneStats);
     await page.mouse.up();
-    await page.mouse.move(box.x + box.width * 0.5, y);
-    await page.mouse.down();
+    await grabHandle(page);
     await page.mouse.move(box.x - 400, y, { steps: 4 }); // frac→0
     const L0 = await page.evaluate(paneStats);
     await page.mouse.up();
@@ -343,6 +355,56 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
 
     return `render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms · ssim ${perf.ssim.toFixed(1)}ms → interactive ${interactive.toFixed(1)}ms; liveness ${probe.ticks} beats, max stall ${probe.maxGap.toFixed(0)}/${probe.dur.toFixed(0)}ms`;
   });
+
+  await check(8, 'Realtime orbit: stage-body drag re-matches mid-drag and moves the pose, not the divider', async () => {
+    const box = await page.locator('.scrub-stage').boundingBox();
+    assert.ok(box, 'scrub-stage not found');
+    const y = box.y + box.height / 2;
+
+    // Put the divider at a known 50% via its handle. The intro auto-sweep can't be relied
+    // on here: after check 6's reload the headless page throttles rAF while idle, so the
+    // sweep may never settle to 50%. An explicit handle drag is deterministic (and also
+    // proves the handle positions the divider before the stage-body orbit below).
+    await grabHandle(page);
+    await page.mouse.move(box.x + box.width * 0.5, y, { steps: 4 });
+    await page.mouse.up();
+    const left0 = await page.evaluate('document.querySelector(".scrub-handle").style.left') as string;
+
+    // Record output identity + pose before the stage-body drag.
+    await page.evaluate('window.__t = window.__app.getOutput()');
+    const yaw0 = await page.evaluate('window.__app.getState().params.yaw') as number;
+
+    // Press the STAGE BODY away from the divider (x=25% while the divider sits at 50%)
+    // and orbit right. WITHOUT releasing, a fresh PipelineOutput must appear — proof the
+    // rematch runs mid-drag, not only at pointerup.
+    await page.mouse.move(box.x + box.width * 0.25, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.55, y, { steps: 8 });
+    await page.waitForFunction('window.__app.getOutput() !== window.__t', { timeout: 60000 });
+    const leftMid = await page.evaluate('document.querySelector(".scrub-handle").style.left') as string;
+    await page.mouse.up();
+    await page.waitForFunction('!window.__app.getState().busy', { timeout: 60000 });
+
+    const yaw1 = await page.evaluate('window.__app.getState().params.yaw') as number;
+    const sceneYaw = await page.evaluate('window.__app.scene.yawDeg') as number;
+    const left1 = await page.evaluate('document.querySelector(".scrub-handle").style.left') as string;
+
+    // (a) the orbit changed the pose and params tracks the scene camera exactly.
+    assert.notEqual(yaw1, yaw0, `params.yaw unchanged by stage-body orbit (${yaw0})`);
+    assert.equal(yaw1, sceneYaw, `params.yaw ${yaw1} != scene.yawDeg ${sceneYaw}`);
+    // (b) a stage-body drag must NOT move the divider — held at 50% across the whole drag.
+    assert.equal(leftMid, left0, `divider moved mid stage-body drag (${left0} -> ${leftMid})`);
+    assert.equal(left1, left0, `divider moved by stage-body drag (${left0} -> ${left1})`);
+
+    // (c) the handle still moves the divider.
+    await grabHandle(page);
+    await page.mouse.move(box.x + box.width * 0.8, y, { steps: 4 });
+    await page.mouse.up();
+    const left2 = await page.evaluate('document.querySelector(".scrub-handle").style.left') as string;
+    assert.notEqual(left2, left0, `handle drag did not move the divider (${left0} -> ${left2})`);
+
+    return `orbit yaw ${yaw0.toFixed(1)}->${yaw1.toFixed(1)} (scene ${sceneYaw.toFixed(1)}); divider held ${left0} through body drag; handle moved ${left0}->${left2}`;
+  });
 }
 
 // --- runner ----------------------------------------------------------------------
@@ -365,8 +427,8 @@ async function main(): Promise<void> {
   await page.close();
   await dev.close();
 
-  // Check 8: static build artifact + preview.
-  await check(8, 'vite build succeeds and vite preview serves a working page', async () => {
+  // Check 9: static build artifact + preview.
+  await check(9, 'vite build succeeds and vite preview serves a working page', async () => {
     await build({ configFile });
     const server: PreviewServer = await preview({ configFile, preview: { port: 0 } });
     const url = server.resolvedUrls!.local[0];

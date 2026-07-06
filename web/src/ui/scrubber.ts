@@ -19,6 +19,7 @@ export class Scrubber {
   private squint = false;
   private heatmapOn = false;
   private heat: HTMLCanvasElement | null = null;
+  private sweepRaf = 0;
 
   constructor(
     private readonly scene: HTMLCanvasElement,
@@ -38,15 +39,20 @@ export class Scrubber {
       this.layout();
     };
     let dragging = false;
-    stage.addEventListener('pointerdown', (e) => {
+    // Divider drags live on the handle, not the stage — the stage is an orbit surface
+    // (ui/index.ts). stopPropagation stops a handle drag from also starting an orbit.
+    // frac is still measured against the STAGE rect, so dragging past an edge pins 0/1.
+    this.handle.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.cancelSweep();
       dragging = true;
-      stage.setPointerCapture(e.pointerId);
+      this.handle.setPointerCapture(e.pointerId);
       setFromEvent(e.clientX);
     });
-    stage.addEventListener('pointermove', (e) => { if (dragging) setFromEvent(e.clientX); });
-    const end = (e: PointerEvent): void => { dragging = false; stage.releasePointerCapture(e.pointerId); };
-    stage.addEventListener('pointerup', end);
-    stage.addEventListener('pointercancel', end);
+    this.handle.addEventListener('pointermove', (e) => { if (dragging) setFromEvent(e.clientX); });
+    const end = (e: PointerEvent): void => { dragging = false; this.handle.releasePointerCapture(e.pointerId); };
+    this.handle.addEventListener('pointerup', end);
+    this.handle.addEventListener('pointercancel', end);
   }
 
   setSquint(on: boolean): void {
@@ -70,6 +76,12 @@ export class Scrubber {
     }
     const grid = this.getGrid();
     this.heat = this.heatmapOn && grid ? heatmapCanvas(this.scene, this.raster, grid) : null;
+    this.draw();
+  }
+
+  // Re-composite at the current frac. The UI calls this during an orbit drag, after
+  // the scene canvas has re-rendered, so the left pane tracks the live 3D view.
+  redraw(): void {
     this.draw();
   }
 
@@ -110,9 +122,16 @@ export class Scrubber {
       // 0→1 over the first 60% of the timeline, then 1→0.5 over the last 40%.
       this.frac = p < 0.6 ? p / 0.6 : 1 - ((p - 0.6) / 0.4) * 0.5;
       this.layout();
-      if (p < 1) requestAnimationFrame(step);
-      else { this.frac = 0.5; this.layout(); }
+      if (p < 1) this.sweepRaf = requestAnimationFrame(step);
+      else { this.sweepRaf = 0; this.frac = 0.5; this.layout(); }
     };
-    requestAnimationFrame(step);
+    this.sweepRaf = requestAnimationFrame(step);
+  }
+
+  // Grabbing the divider hands frac to the user: a still-pending sweep frame must not
+  // overwrite it afterwards, so the handle pointerdown cancels the intro sweep here.
+  private cancelSweep(): void {
+    cancelAnimationFrame(this.sweepRaf);
+    this.sweepRaf = 0;
   }
 }
