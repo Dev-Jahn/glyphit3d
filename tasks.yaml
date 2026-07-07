@@ -48,6 +48,7 @@ tasks:
     anchor: "DESIGN §6"
     origin: "사용자 피드백 2026-07-06"
   - id: decision/public-repo-toggle
+    notes: "사용자 결정 2026-07-07: 이번 라운드(frontier 일괄 처리) 완료·전체 게이트 green 후 public 전환 + Pages 배포 확인까지 실행. 결정 확정, 실행만 라운드 클로즈 시점."
     title: "private→public 전환 여부 (전환 시 Pages 웹 데모 자동 배포)"
     status: "pending"
     origin: "프로젝트 상태"
@@ -145,13 +146,13 @@ tasks:
     origin: "gate-2026-07-07-review-fixes"
   - id: fix/rematch-single-flight-gpu-race
     title: "모든 rematch(control/ladder/orbit)를 단일 큐로 직렬화 — 공유 GpuMatcher staging buffer의 host map-state 경합 차단(F1R-1). seq 가드는 stale commit만 막고 동시 gpu.match() 재진입은 못 막아 최신 run wrong-frame/noisy CPU fallback 발생"
-    status: "pending"
+    status: "done"
     severity: "major"
     origin: "review-2026-07-07-review-fixes"
     notes: "F1R-1 re-review; extends done fix/rematch-single-flight (commit-only guard). Pre-existing shared-instance race. Smallest fix: route __app.rematch through requestRematch coalescing loop"
   - id: fix/gpu-matcher-cstat-host-realloc
     title: "gpu-matcher: cstatHost를 자체 numCells*16 조건으로 재할당(현재 targetHost.length==numCells*3*P 단일 조건에 편승, F2R-1) — numCells*P 동률·numCells 증가 시 cstatHost stale→tail셀 stats 0→P≤256라 fallback 없이 silent 오출력. 충돌쌍 host-scratch 단위테스트 추가"
-    status: "pending"
+    status: "done"
     severity: "major"
     origin: "review-2026-07-07-review-fixes"
     notes: "F2R-1 re-review; extends done fix/gpu-matcher-p-guard. gpu-matcher.ts:213-216. one-directional silent (numCells 증가), 감소는 throw→fallback"
@@ -162,3 +163,26 @@ tasks:
     anchor: "§5.4"
     origin: "review-2026-07-07-review-fixes"
     notes: "forward constraint for future browser TTF profiling; from re-review OQ2"
+  - id: fix/rematch-promise-completion
+    title: "__app.rematch() promise가 coalesce되면 실제 작업 완료 전에 resolve — 공개 Playwright/UI surface의 완료 의미 변경(wave1 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: fix/torn-runparams-snapshot
+    title: "torn runParams snapshot: ensureAtlas await 후 params 재읽기로 old-charset atlas + new params가 한 commit에 페어링될 수 있음(선재 결함, wave1 리뷰 발견)"
+    status: "pending"
+    severity: "minor"
+  - id: fix/contrast-floor-linear-space
+    title: "contrastFloor: fit-space floor가 linear mode raster-space 가시성과 미페어링 + #space=linear에서 demo floor=0.06 유지(wave1 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: docs/contrast-floor-design-amendment
+    title: "DESIGN §3.4 개정: contrastFloor를 collapseThreshold 옆 새 opt-in 미학 knob으로 정식 등재(boost-or-demote 의미론, 재구성 비용 −0.0054 실측 포함)"
+    status: "pending"
+  - id: fix/palette-q0-guard
+    title: "--quality 0 + --palette 조합이 palette를 조용히 무시(rampGrid 경로 guard 우회) — 명시적 거부/경고로(wave1 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: chore/vitest-worktree-exclude
+    title: "vitest가 .claude/worktrees 하위 중첩 repo 사본까지 수집(기본 include가 root-anchored exclude 우회) — **/.claude/** exclude 추가"
+    status: "done"
+    severity: "minor"
