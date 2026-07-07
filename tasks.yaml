@@ -79,3 +79,40 @@ tasks:
     deps: ["perf/webgpu-matcher"]
     anchor: "DESIGN §7"
     origin: "gpu-reality 라운드 후속"
+  - id: fix/rematch-single-flight
+    title: "rematch(): 단일 비행(seq/generation) 가드로 최신 run만 grid/raster/SSIM/perf를 commit — 느린 이전 run이 화면·export(json/ans/png)를 덮어쓰지 못하게. controls/ladder의 bare rematch()도 동일 큐를 타야 함"
+    status: "pending"
+    severity: "major"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: fix/gpu-matcher-p-guard
+    title: "GpuMatcher: ensureCellBuffers 캐시 키에 P 포함(numCells만 아님)하고 P>256 거부/상한(WGSL sT array<f32,768>=3·256 고정으로 첫 run부터 OOB); same-numCells/different-P 회귀 테스트 추가"
+    status: "pending"
+    severity: "major"
+    anchor: "§5.2"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: decision/profile-stats-objective-contract
+    title: "프로파일 scalar stats(sumA/sumAA/gradAA/ink) objective 계약 확정: hash 대상 truth(Contract B, hash 범위 확대)인가 coverage에서 decode-time 재계산(Contract A, DESIGN §5.4/§5.2)인가 — 현재 B 데이터모델+A hash 범위 혼종이 무결성 공백"
+    status: "pending"
+    severity: "major"
+    anchor: "§5.4"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: docs/wgsl-mirror-kahan-comment
+    title: "wgsl-mirror.ts stale Kahan 주석 정정: 커널은 8-way-blocked raw cross 후 saTc=saT−Sa1·mean (matcher-wgsl.ts 헤더와 동일 표현으로); 수치 무영향 doc drift"
+    status: "pending"
+    severity: "minor"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: fix/e2e-liveness-frame-budget
+    title: "e2e check-7 정정: GPU 경로 raster는 메인스레드 동기(~96ms, 주석의 off-thread는 오기), vacuous한 maxGap<dur를 실제 프레임예산 임계(longtask/maxGap<~50ms)로 교체"
+    status: "pending"
+    severity: "minor"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: docs/gpu-realtime-wording
+    title: "README 헤드라인 'GPU-real-time' 문구 축소(O3): 'WebGPU Q3 matcher shipped; full GPU raster/temporal coherence remain follow-ups' — 메인스레드 raster ~96ms 잔존 반영"
+    status: "pending"
+    severity: "minor"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: chore/parity-adversarial-fixtures
+    title: "parity harness 적대적 fixture 보강(O1): synthetic high-DC/low-AC 셀, gateTau 경계, exact/near-tie lower-gi 보존 property, P/G sweep — 'byte-exact'를 유한 14-config sweep 너머로 확장"
+    status: "pending"
+    severity: "minor"
+    origin: "review-2026-07-07-gpu-reality"
