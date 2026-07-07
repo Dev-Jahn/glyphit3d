@@ -14,6 +14,12 @@ const CAPTIONS: Record<number, string> = {
   4: '+ edge / multi-scale loss — contour preservation.',
 };
 
+// Q4's edge loss is a cross-cell pass (it reads the full-image vertical gradient); the
+// web matcher shards the grid into row bands (pipeline.ts / worker.ts), so a banded Q4
+// would corrupt at every seam. Q4 is therefore disabled on the web — the node CLI keeps
+// it. main.ts also clamps a #quality=4 fragment down to Q3 so no path can select it.
+const WEB_MAX_QUALITY = 3;
+
 export class Ladder {
   readonly element: HTMLElement;
   private readonly buttons: HTMLButtonElement[] = [];
@@ -23,12 +29,16 @@ export class Ladder {
   constructor(badge: HTMLElement) {
     const row = el('div', { class: 'ladder-row' });
     for (let q = 0; q <= 4; q++) {
-      const btn = el('button', {
-        class: 'q-btn',
-        type: 'button',
-        text: `Q${q}`,
-        click: () => { app().setParams({ quality: q as 0 | 1 | 2 | 3 | 4 }); void app().rematch(); },
-      });
+      const attrs: Record<string, string | boolean | ((e: Event) => void)> = {
+        class: 'q-btn', type: 'button', text: `Q${q}`,
+      };
+      if (q > WEB_MAX_QUALITY) {
+        attrs.disabled = true;
+        attrs.title = 'Q4 (edge loss) needs contiguous rows — unavailable in the parallel web matcher';
+      } else {
+        attrs.click = () => { app().setParams({ quality: q as 0 | 1 | 2 | 3 | 4 }); void app().rematch(); };
+      }
+      const btn = el('button', attrs);
       this.buttons.push(btn);
       row.append(btn);
     }

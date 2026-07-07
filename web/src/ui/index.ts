@@ -69,8 +69,10 @@ async function boot(): Promise<void> {
     scrubber.refresh();
     ladder.refresh();
     permalink.refresh();
+    // P1: interactive runs report ssim === null — keep the last shown % rather than
+    // flickering to '—' during a drag.
     const s = app().getOutput()?.ssim;
-    matchPct.textContent = s == null ? '—' : `${(s * 100).toFixed(1)}%`;
+    if (s != null) matchPct.textContent = `${(s * 100).toFixed(1)}%`;
   };
   onOutput(refresh);
   refresh();

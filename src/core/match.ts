@@ -276,14 +276,49 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
           mr = ar / P; mg = ag / P; mb = ab / P;
         }
         const mean: [number, number, number] = [mr, mg, mb];
-        if (quality === 1) cells[cellIdx] = { ch: ' ', fg: encode(ffg), bg: encode(fbg) };
-        else if (quality === 2) cells[cellIdx] = { ch: ' ', fg: encode(mean), bg: encode(fbg) };
-        else cells[cellIdx] = { ch: ' ', fg: null, bg: encode(mean) };
-        // gated cell → the only candidate is the flat space glyph (glyphs[0]); score its
-        // (already-known) SSE against the mean so the contour Viterbi can keep it.
+        // P0 (Round P) gate-contract fix: emit the best FLAT glyph representation under the
+        // quality's colour constraints, chosen by the SAME per-channel scorer the full scan
+        // uses (channelSse) — so on a flat cell the gated emit IS the full exhaustive scan's
+        // argmin, INCLUDING the Q2 per-channel fg clamp and a nonzero fixedBg (both of which a
+        // constant argmax-sumA²/sumAA glyph would get wrong for bright/saturated or fbg≠0 cells).
+        // A flat cell has T_c ≡ m_c, so its per-glyph stats are pure scalars — saT=m_c·sumA,
+        // S1T=P·m_c, STT=P·m_c² — and the scorer runs with NO pixel loops: O(G) per gated cell,
+        // still ≪ the full scan. Q3+ (bg free) is unchanged: its flat fill IS the cell mean.
+        let gatedGi = 0;
+        if (quality === 1 || quality === 2) {
+          let bestScore = Infinity;
+          for (let gi = 0; gi < G; gi++) {
+            const g = glyphs[gi]!;
+            gStats.Saa = g.sumAA; gStats.Sa1 = g.sumA; gStats.S11 = P;
+            let sc = 0;
+            for (let c = 0; c < 3; c++) {
+              const m = mean[c]!;
+              sc += channelSse(gStats, m * g.sumA, P * m, P * m * m, quality, m, m, ffg[c]!, fbg[c]!);
+            }
+            if (sc < bestScore) { bestScore = sc; gatedGi = gi; }
+          }
+          const g = glyphs[gatedGi]!;
+          if (quality === 1) {
+            cells[cellIdx] = { ch: g.ch, fg: encode(ffg), bg: encode(fbg) };
+          } else {
+            // fg fitted (fg_c = clamp(fbg_c + sumA·(m_c−fbg_c)/sumAA)), bg fixed — via channelFB
+            // so the emitted colour is byte-identical to the winner's full-scan refit.
+            gStats.Saa = g.sumAA; gStats.Sa1 = g.sumA; gStats.S11 = P;
+            const fg: [number, number, number] = [0, 0, 0];
+            for (let c = 0; c < 3; c++) {
+              const m = mean[c]!;
+              fg[c] = channelFB(gStats, m * g.sumA, P * m, P * m * m, quality, m, m, ffg[c]!, fbg[c]!)[0];
+            }
+            cells[cellIdx] = { ch: g.ch, fg: encode(fg), bg: encode(fbg) };
+          }
+        } else {
+          cells[cellIdx] = { ch: ' ', fg: null, bg: encode(mean) };
+        }
+        // gated cell → single forced candidate = the emitted glyph (Q1/Q2 now a real atlas
+        // glyph, Q3+ still space), so the contour Viterbi keeps the exact gated emit.
         if (cands) {
           const c = cells[cellIdx]!;
-          cands[cellIdx] = [{ glyphIdx: 0, score: eacScale, F: c.fg ?? encode(mean), B: c.bg ?? encode(mean), fgNull: c.fg === null }];
+          cands[cellIdx] = [{ glyphIdx: gatedGi, score: eacScale, F: c.fg ?? encode(mean), B: c.bg ?? encode(mean), fgNull: c.fg === null }];
         }
         continue;
       }

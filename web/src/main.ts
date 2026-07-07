@@ -32,6 +32,9 @@ const pipeline = new Pipeline();
 let atlas: Atlas | null = null;
 let currentCharset = '';
 let last: PipelineOutput | null = null;
+// P1: interactive runs skip SSIM (out.ssim === null). Keep the last COMPUTED ssim so the
+// badge/state can hold it across ssim-less interactive frames.
+let lastSsim: number | null = null;
 // Active-run counter, not a boolean: requestRematch holds one extra count across its
 // whole coalescing loop so busy never blips false between iterations. busy = count>0.
 let busyCount = 0;
@@ -49,20 +52,25 @@ async function ensureAtlas(charset: Charset): Promise<Atlas> {
   return atlas;
 }
 
-async function rematch(): Promise<void> {
+async function rematch(interactive = false): Promise<void> {
   busyCount++;
   try {
     const a = await ensureAtlas(params.charset);
     scene.setOrbit(params.yaw, params.pitch);
-    const out = await pipeline.run(scene, a, { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset });
+    const out = await pipeline.run(scene, a, { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset }, interactive);
     last = out;
+    if (out.ssim != null) lastSsim = out.ssim;
 
     rasterCanvas.width = out.raster.w;
     rasterCanvas.height = out.raster.h;
     const ctx = rasterCanvas.getContext('2d')!;
     ctx.putImageData(new ImageData(out.raster.data, out.raster.w, out.raster.h), 0, 0);
 
-    ssimEl.textContent = out.ssim.toFixed(4);
+    // P1: rewrite #ssim with the last COMPUTED value on EVERY run (incl. interactive
+    // ones where out.ssim is null) — reassigning textContent fires the #ssim
+    // MutationObserver (the UI's new-output signal) even when the string is unchanged,
+    // so the scrubber composite refreshes while a drag holds the pose still.
+    ssimEl.textContent = lastSsim == null ? '—' : lastSsim.toFixed(4);
     renderPerf(perfEl, out.timings);
   } finally {
     busyCount--;
@@ -72,16 +80,26 @@ async function rematch(): Promise<void> {
 // Coalescing single-flight for orbit-driven rematches: a request during an in-flight
 // run only marks the pose dirty; the running loop re-matches once more when it drains
 // (so the final pose always wins). The held count keeps busy true across the loop.
+// P1: the loop carries the STRICTEST pending requirement — if any request queued during a
+// run was non-interactive, the drain run computes SSIM (interactive = false).
 let coalescing = false;
 let dirty = false;
-async function requestRematch(): Promise<void> {
-  if (coalescing) { dirty = true; return; }
+let pendingNonInteractive = false;
+async function requestRematch(interactive: boolean): Promise<void> {
+  if (coalescing) {
+    dirty = true;
+    if (!interactive) pendingNonInteractive = true;
+    return;
+  }
   coalescing = true;
   busyCount++;
+  let runInteractive = interactive;
   try {
     do {
       dirty = false;
-      await rematch();
+      pendingNonInteractive = false;
+      await rematch(runInteractive);
+      runInteractive = !pendingNonInteractive; // a queued non-interactive request forces SSIM
     } while (dirty);
   } finally {
     busyCount--;
@@ -92,13 +110,13 @@ async function requestRematch(): Promise<void> {
 scene.onOrbitMove = () => {
   params.yaw = scene.yawDeg;
   params.pitch = scene.pitchDeg;
-  void requestRematch();
+  void requestRematch(true); // mid-drag frames skip SSIM
 };
 
 scene.onOrbitEnd = () => {
   params.yaw = scene.yawDeg;
   params.pitch = scene.pitchDeg;
-  void requestRematch();
+  void requestRematch(false); // the settled pose computes SSIM
 };
 
 // Drag & drop a .glb/.gltf to replace the model.
@@ -128,7 +146,7 @@ declare global {
 window.__app = {
   rematch,
   setParams: (p) => { Object.assign(params, p); },
-  getState: () => ({ params: { ...params }, ssim: last ? last.ssim : null, busy: busyCount > 0 }),
+  getState: () => ({ params: { ...params }, ssim: lastSsim, busy: busyCount > 0 }),
   getOutput: () => last,
   scene,
 };
@@ -175,7 +193,9 @@ function applyFragment(p: Params): void {
   const cols = n('cols');
   if (cols !== undefined) p.cols = clamp(Math.round(cols), 60, 160); // matches the columns slider range
   const quality = n('quality');
-  if (quality !== undefined) p.quality = clamp(Math.round(quality), 0, 4) as Params['quality'];
+  // Web tops out at Q3: Q4's edge loss is a cross-cell pass the band matcher can't run
+  // (see ui/ladder.ts), so a #quality=4 fragment is clamped down rather than left to throw.
+  if (quality !== undefined) p.quality = clamp(Math.round(quality), 0, 3) as Params['quality'];
   const yaw = n('yaw');
   if (yaw !== undefined) p.yaw = clamp(yaw, -360, 360);
   const pitch = n('pitch');
