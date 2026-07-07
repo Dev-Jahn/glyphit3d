@@ -52,8 +52,9 @@ tasks:
     status: "pending"
     origin: "프로젝트 상태"
   - id: perf/webgpu-matcher
+    round: "2026-07-07-gpu-reality"
     title: "WebGPU WGSL matcher (근본 성능 개선)"
-    status: "pending"
+    status: "done"
     anchor: "DESIGN §7"
     notes: "WebGPU는 이 머신 headless Chromium(secure context)에서 Blackwell GPU로 검증됨 — 이전 blocked 사유(GPU 부재)는 오진; 실사용자 브라우저도 WebGPU 지원. 옛 M2.5"
   - id: feat/palette-constrained-color
@@ -67,7 +68,8 @@ tasks:
     anchor: "DESIGN §4"
     notes: "was M4; §4.3 잔여 가설 마지막 시험대"
   - id: chore/e2e-gpu-rendering
+    round: "2026-07-07-gpu-reality"
     title: "e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변)"
-    status: "pending"
+    status: "done"
     anchor: "DESIGN §10"
     origin: "GPU 오진 정정 2026-07-07"

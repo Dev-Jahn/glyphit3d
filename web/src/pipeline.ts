@@ -1,8 +1,25 @@
-import type { Atlas, Grid, GridCell } from '../../src/core/types.js';
-import { gridRows } from '../../src/core/options.js';
+import type { Atlas, Grid, GridCell, LinearImage } from '../../src/core/types.js';
+import { gridRows, defaultOptions } from '../../src/core/options.js';
+import { rasterizeGrid } from '../../src/render/raster.js';
+import { linearToSrgb } from '../../src/core/color.js';
 import { imageDataToLinear } from './browser-image.js';
+import { GpuMatcher } from './webgpu/gpu-matcher.js';
 import type { Scene } from './scene.js';
 import type { BandResult, ErrorResult, MatchBandRequest, SetAtlasRequest, SsimRequest, SsimResult } from './worker.js';
+
+// LinearImage → sRGB u8 RGBA for the canvas (mirrors worker.ts toRGBA; used by the GPU
+// path, which rasterizes on the main thread instead of in a band worker).
+function toRGBA(img: LinearImage): Uint8ClampedArray {
+  const n = img.w * img.h;
+  const out = new Uint8ClampedArray(n * 4);
+  for (let i = 0; i < n; i++) {
+    out[i * 4] = Math.round(linearToSrgb(img.data[i * 3]!));
+    out[i * 4 + 1] = Math.round(linearToSrgb(img.data[i * 3 + 1]!));
+    out[i * 4 + 2] = Math.round(linearToSrgb(img.data[i * 3 + 2]!));
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
 
 // 3D scenes have no intrinsic pixel aspect; render a near-square footprint and let
 // the matcher pick rows from it (gridRows corrects for the non-square glyph cell).
@@ -21,6 +38,7 @@ export interface PipelineOutput {
   raster: { w: number; h: number; data: Uint8ClampedArray };
   ssim: number | null; // P1: null on interactive runs (SSIM skipped)
   timings: Timings & { render: number };
+  matcher: 'gpu' | 'pool'; // which path produced this run (WebGPU Q3 matcher vs the CPU pool)
 }
 
 type WorkerResponse = BandResult | SsimResult | ErrorResult;
@@ -36,6 +54,12 @@ export class Pipeline {
   private readonly poolSize: number;
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (r: WorkerResponse) => void; reject: (e: Error) => void }>();
+  // WebGPU Q3 matcher (perf/webgpu-matcher). Resolves to null when WebGPU is unavailable
+  // (non-secure origin / unsupported browser) → every run uses the CPU pool. Init is kicked
+  // off in the constructor and awaited per run; the promise is already settled by then.
+  private readonly gpuReady: Promise<GpuMatcher | null> = GpuMatcher.create().catch(() => null);
+  // Q3 web-path defaults (gateTau/mdlLambda) the GPU matcher must use to match matchGrid.
+  private readonly q3opts = defaultOptions(3);
 
   constructor() {
     // N = min(hardwareConcurrency − 1, 8, rows); the rows cap is applied per run.
@@ -73,8 +97,9 @@ export class Pipeline {
     });
   }
 
-  // Render the scene to the grid footprint, linearize, band-match, assemble, and (on
-  // non-interactive runs) score. `interactive` skips the SSIM round-trip (P1).
+  // Render the scene to the grid footprint, linearize, then match on the GPU (Q3 default
+  // web path, secure-context WebGPU) or the CPU pool (everything else / WebGPU absent),
+  // assemble, and (on non-interactive runs) score. `interactive` skips the SSIM round-trip.
   async run(scene: Scene, atlas: Atlas, params: PipelineParams, interactive: boolean): Promise<PipelineOutput> {
     const { cellW, cellH } = atlas;
     const gridW = params.cols * cellW;
@@ -89,6 +114,73 @@ export class Pipeline {
     // so no resample is needed and this stays the SSIM reference).
     const tPrep = performance.now();
     const lin = imageDataToLinear(imgData);
+
+    // Route: Q3 default web path on a WebGPU-capable secure context → GPU matcher (a
+    // capability boundary, not a masking fallback). Q0/Q1/Q2 and any WebGPU-absent context
+    // → CPU pool. A mid-session GPU failure (device lost) falls back to the pool for that run.
+    const gpu = await this.gpuReady;
+    if (gpu && gpu.available && params.quality === 3) {
+      try {
+        return await this.runGpu(gpu, lin, atlas, params, interactive, render, tPrep, rows);
+      } catch (e) {
+        console.warn('gpu matcher failed; falling back to CPU pool', e);
+      }
+    }
+    return this.runPool(lin, atlas, params, interactive, render, tPrep, rows);
+  }
+
+  // GPU Q3 path: match on the GPU (async — main thread stays live), rasterize on the main
+  // thread (reuse the CPU rasterizer), and score SSIM on the pool (as today). timings.match
+  // is the GPU dispatch→readback wall-clock so e2e check 7 stays meaningful.
+  private async runGpu(
+    gpu: GpuMatcher, lin: LinearImage, atlas: Atlas, params: PipelineParams,
+    interactive: boolean, render: number, tPrep: number, rows: number,
+  ): Promise<PipelineOutput> {
+    const { cellW, cellH } = atlas;
+    const w = lin.w, h = lin.h;
+    const res = await gpu.match(
+      lin, atlas,
+      { quality: 3, space: params.space, gateTau: this.q3opts.gateTau, mdlLambda: this.q3opts.mdlLambda },
+      params.cols, rows,
+    );
+    // resample = main-thread prep (linearize + working-space transform + per-cell stats +
+    // gate + upload) = wall-clock since tPrep, minus the GPU dispatch→readback slice.
+    const resample = performance.now() - tPrep - res.matchMs;
+
+    const grid: Grid = { cols: params.cols, rows, cells: res.cells, cellW, cellH, font: atlas.fontPath };
+
+    // Rasterize in the fit space (Q3 always fits in `params.space`). Reuse the CPU rasterizer.
+    const tR = performance.now();
+    const out = rasterizeGrid(grid, atlas, params.space);
+    const rgba = toRGBA(out);
+    const raster = performance.now() - tR;
+
+    let ssimVal: number | null = null;
+    let ssimMs = 0;
+    if (!interactive) {
+      const tS = performance.now();
+      const id = this.nextId++;
+      const req: SsimRequest = { type: 'ssim', id, a: { w, h, data: out.data }, b: { w, h, data: lin.data } };
+      const sr = await this.request<SsimResult>(this.workers[0]!, req, [out.data.buffer, lin.data.buffer]);
+      ssimVal = sr.ssim;
+      ssimMs = performance.now() - tS;
+    }
+
+    return {
+      grid,
+      raster: { w, h, data: rgba },
+      ssim: ssimVal,
+      timings: { render, resample, match: res.matchMs, raster, ssim: ssimMs },
+      matcher: 'gpu',
+    };
+  }
+
+  // CPU worker-pool path (unchanged Round P/P2 band matcher).
+  private async runPool(
+    lin: LinearImage, atlas: Atlas, params: PipelineParams,
+    interactive: boolean, render: number, tPrep: number, rows: number,
+  ): Promise<PipelineOutput> {
+    const { cellW, cellH } = atlas;
     const w = lin.w, h = lin.h;
     const rowFloats = w * 3;
 
@@ -149,6 +241,7 @@ export class Pipeline {
       raster: { w, h, data: rgba },
       ssim: ssimVal,
       timings: { render, resample, match: matchMax, raster: rasterMax, ssim: ssimMs },
+      matcher: 'pool',
     };
   }
 }
