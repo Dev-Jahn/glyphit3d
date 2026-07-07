@@ -8,8 +8,8 @@
 That sentence is the **thesis**. What actually ships today is the first two
 clauses, on CPU: a 3D G-buffer bake pipeline and a continuous-coverage two-color
 matcher that already edges [chafa](https://hpjansson.org/chafa/) on the shared
-benchmark. Temporal stability and a GPU real-time path are on the roadmap, not in
-the box yet — see [Status](#status).
+benchmark. Temporal stability is on the roadmap; the GPU real-time path now ships
+for the Q3 web matcher — see [Status](#status).
 
 ![native 3D render on the left, the same frame rendered entirely in text on the right](docs/assets/hero.png)
 
@@ -162,16 +162,21 @@ Roadmap milestones (full plan in [DESIGN.md §12](DESIGN.md)):
   3D-native ablation. Produced a documented truecolor selection-prior null
   (above).
 - **M2 — shipped.** Interactive web demo — un-blur scrubber, quality ladder with
-  live SSIM, permalink, PNG export. The matcher runs on the CPU in a Web Worker;
-  the WebGPU path is deferred to M2.5 (no headless adapter in CI). Playwright
-  E2E: 8/8.
+  live SSIM, permalink, PNG export. The matcher runs on the CPU in a Web Worker.
+  Playwright E2E: 8/8.
 - **M3 — shipped.** Gate redesign (τ 2e-5) + synthesized ideal-mask families
   (quadrant/sextant/braille, exact region solver) lift the chafa gate to a
   strictly-fair **+0.0034** and win all six images; the silhouette/orientation and
   contour-DP cross-cell priors were measured and **published as a null** (edgeSSIM
   1/6, 0/6) — DESIGN §4.3 retracted. See [docs/M3-RESULTS.md](docs/M3-RESULTS.md).
+- **GPU real-time — shipped (2026-07).** The CPU matcher was parallelized across a
+  worker pool, then a **WebGPU compute matcher** landed for the Q3 default web path:
+  **byte-exact parity with the CPU closed-form** (glyph 100%, ΔSSIM 0 across the
+  parity harness), GPU compute ~1.25ms vs ~118ms pool. The WebGL2 render and the
+  WebGPU match both run on the GPU on a secure context; browsers without WebGPU use
+  the CPU pool. See [docs/WEBGPU-MATCHER-SPEC.md](docs/WEBGPU-MATCHER-SPEC.md).
 
-Unit tests: `npx vitest run` (100 passing). E2E: `npm run e2e` (8/8).
+Unit tests: `npx vitest run` (126 passing). E2E: `npm run e2e` (9/9).
 
 The founding design document is [DESIGN.md](DESIGN.md) — including the honest
 prior-art table and the forbidden-claims list that constrains all copy here.

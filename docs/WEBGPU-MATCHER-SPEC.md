@@ -116,3 +116,36 @@ closed-form CPU truth. (The gate is what makes this safe to enable by default.)
 Round 2+: GPU Q1/Q2/Q4, families/contour on GPU, GPU rasterizer, running the matcher
 in a worker via OffscreenCanvas, and a native CUDA matcher for the CLI/bench path
 (the 8 GPUs make that independently attractive). None are in round 1.
+
+## Outcome (recorded after implement → adversarial review → verify)
+
+**Shipped, round-1 scope met** (commit f93d324). WGSL compute matcher for the Q3 default
+web path; pipeline routes Q3-on-secure-WebGPU to the GPU and everything else to the CPU
+pool (a `matcher` tag records which ran). `src/core/*` unchanged.
+
+**Predictions:**
+1. GPU match < 15ms — **MET.** GPU compute (timestamp) 1.25ms @ cols=100/Q3/blocks, ~95×
+   under the ~118ms 8-worker pool. Nuance: the headless dispatch→readback WALL-CLOCK is
+   ~25ms, but that is Dawn's queue-completion callback latency, not compute (compute 1.25ms
+   + map 1.0ms, measured separately) — it collapses in a real interactive browser.
+2. Parity §6 with no `src/core` change — **MET, byte-exact.** Independently reproduced:
+   14/14 configs, glyph 100.000% agreement, 0 non-tie, gate 100%, colorΔ 0, |ΔSSIM| = 0 on
+   every image (scene/torus/DamagedHelmet/washout, ascii+blocks, cols 80/100/140,
+   gamma+linear). A vitest mirror proves the WGSL fit == `src/core/fit.ts` to < 1e-9 over 40k cases.
+3. WebGPU-absent → byte-identical CPU pool — **MET**, but the §7.3 GUESS that e2e runs the
+   CPU pool was **FALSIFIED**: Playwright's bundled Chrome-for-Testing exposes WebGPU headless
+   (unlike the chrome-headless-shell the spec author probed), so e2e runs the GPU path (match
+   ~55ms). Both paths are still covered in one e2e run — Q0/Q1 (quality≠3) route to the pool
+   and pass. e2e 9/9, no assertion weakened.
+4. Readback < 2ms — **MET** (map-latency 1.0–1.3ms).
+
+**Review:** 3 adversarial lenses, 7 findings, all 7 verify-refuted (parity is empirically
+exact, so none was a reproducible defect). One real quality issue survived triage and was
+fixed before commit: the WGSL header comment claimed "Kahan compensation, never cancels
+SaT−Sa1·mean" while the code uses 8-way-blocked accumulation of the raw cross then
+`saT − Sa1·mean`; the comment now describes the actual numerics. (Process note: Fable hit its
+token budget mid-run, so the parity lens re-ran on opus via `resumeFromRunId` cache resume.)
+
+**Follow-ups:** the GPU path still rasterizes on the main-thread CPU (~96ms in the e2e
+wall-clock) — a GPU rasterizer is the next interactive lever. Q1/Q2/Q4 + families on GPU and a
+native CUDA matcher for the CLI/bench remain round-2+.

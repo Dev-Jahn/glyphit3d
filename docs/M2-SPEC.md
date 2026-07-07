@@ -9,6 +9,13 @@ accessible for verification — we do not ship unverifiable kernels). DESIGN §1
 M2's "60fps" criterion is restated for CPU: interactive re-render < 500ms at
 default settings, measured headless.
 
+> **Correction (2026-07-07, gpu-reality round):** the premise "this environment has no
+> WebGPU" was a MISDIAGNOSIS. `navigator.gpu` was absent because it was probed on a
+> NON-SECURE origin (data:/http+IP); WebGPU requires a secure context (localhost/https),
+> where it works headless on this box's 8× RTX PRO 6000 Blackwell. The WGSL matcher
+> shipped 2026-07-07 (perf/webgpu-matcher, docs/WEBGPU-MATCHER-SPEC.md). M2's CPU-first
+> ship + fallback still stands; only the "no WebGPU here" rationale was wrong.
+
 New deps allowed: `vite` (dev). `three` already present. Nothing else.
 
 ## 0. Module ownership

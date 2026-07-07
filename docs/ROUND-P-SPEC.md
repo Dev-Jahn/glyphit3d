@@ -125,6 +125,12 @@ GPU-less SwiftShader box (render ~60ms is the CPU floor here); match-bound and h
 real-GPU clients. P3 (render/match overlap) measured and SKIPPED — out of the fix scope
 and marginal once render is small on real GPU.
 
+**Correction (2026-07-07, gpu-reality round):** this box is NOT GPU-less — the SwiftShader
+render "floor" was self-imposed by the e2e's `--use-angle=swiftshader` flags. With
+`--use-angle=vulkan` render drops to ~33ms on the local Blackwell GPU (chore/e2e-gpu-rendering),
+and the WebGPU matcher (perf/webgpu-matcher) cut match to ~1.25ms. The interactive analysis holds
+directionally (match was the bottleneck); the absolute render figures were software artifacts.
+
 **Q4 on web — DISABLED (user decision).** Q4's edge loss is a cross-cell pass; the band
 matcher would corrupt at every seam, so the worker THROWS on a Q4 band (no silent
 single-thread). The web ladder button is disabled and a #quality=4 fragment clamps to
