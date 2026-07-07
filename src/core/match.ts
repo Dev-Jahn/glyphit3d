@@ -8,6 +8,7 @@ import type { CellFitCtx, FamilySolve } from '../atlas/families.js';
 import { glyphOrientations, orientationBonus, borderProfiles, structureTensor } from '../atlas/orientation.js';
 import type { Orientation } from '../atlas/orientation.js';
 import { extractPolylines, viterbiContour } from './contour.js';
+import { buildPalette, bestPair, paletteSrgb } from './palette.js';
 
 function clamp01(x: number): number { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
@@ -94,6 +95,26 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       : rgb;
   const ffg = toWork(opts.fixedFg);
   const fbg = toWork(opts.fixedBg);
+
+  // Palette-constrained color (DESIGN §6, core/palette.ts). Built in the WORKING space so the
+  // fit/scoring/nearest-neighbor distances pair with the fit space (gamma default). The truecolor
+  // path is completely untouched when opts.palette is absent (pal === null → every guarded block
+  // below is skipped and output stays byte-identical). Only Q3/Q4 (fg-bg) is meaningful, and the
+  // mode is a clean hook point kept free of the M1/M3 selection priors — reject the combination
+  // loudly rather than silently producing a wrong constrained fit.
+  const pal = opts.palette ? buildPalette(opts.palette, space) : null;
+  const refineK = opts.paletteRefineK ?? 8;
+  if (pal) {
+    if (quality < 3) throw new Error('palette mode requires quality 3 or 4 (fg-bg)');
+    if ((opts.families?.length ?? 0) > 0 || (opts.topK ?? 0) > 0 || (opts.splitSelection ?? 0) > 0 ||
+        (opts.antibleedKappa ?? 0) > 0 || opts.styleAlbedoColors || (opts.collapseThreshold ?? 0) > 0 ||
+        (opts.orientKappa ?? 0) > 0) {
+      throw new Error('palette mode is incompatible with families/contour/topK/split/antibleed/style-albedo/collapse/orient');
+    }
+  }
+  // scratch for the palette pair scorer (per-channel saT/STT with the Q4 edge augmentation folded in)
+  const paSaT = pal ? new Float64Array(3) : null;
+  const paSTT = pal ? new Float64Array(3) : null;
 
   // Post-selection invisibility collapse (GATE finding, bench/out/gate-sweep.md). After the
   // winner (text glyph OR family pattern) is chosen, if its fitted fg/bg are visually
@@ -311,6 +332,29 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
             }
             cells[cellIdx] = { ch: g.ch, fg: encode(fg), bg: encode(fbg) };
           }
+        } else if (pal) {
+          // Palette Q3+ gated cell (P0 gate contract): a flat cell has T_c ≡ m_c, so the full
+          // scan's per-glyph stats are pure scalars — saT_c=m_c·sumA, S1T_c=P·m_c, STT_c=P·m_c²,
+          // and the Q4 edge augmentation (saT dot / gradTT) both vanish on a constant patch. Unlike
+          // truecolor — where any glyph reaches SSE 0 (F=B=mean) and mdl breaks the tie toward space —
+          // a palette pair CANNOT reach the mean exactly, and a partial-coverage glyph mixing two
+          // palette colors can beat snapping to the single nearest entry (e.g. flat orange → '@' with
+          // fg=red bg=yellow < space+olive). So run the SAME palette pair scorer per glyph over the
+          // scalar stats (no pixel loops: O(G·pairs)) and emit its global (glyph×pair) argmin — the
+          // gated emit IS the full exhaustive scan's argmin, matching the Q1/Q2 branch above.
+          const flatST: [number, number, number] = [P * mean[0]!, P * mean[1]!, P * mean[2]!];
+          let bestScore = Infinity, bestPFg = 0, bestPBg = 0;
+          for (let gi = 0; gi < G; gi++) {
+            const g = glyphs[gi]!;
+            gStats.Sa1 = g.sumA; gStats.S11 = P;
+            gStats.Saa = isQ4 ? g.sumAA + lam2 * g.gradAA : g.sumAA;
+            for (let c = 0; c < 3; c++) { paSaT![c] = mean[c]! * g.sumA; paSTT![c] = P * mean[c]! * mean[c]!; }
+            const pr = bestPair(gStats, paSaT!, flatST, paSTT!, pal, refineK);
+            const sc = pr.score + opts.mdlLambda * g.ink * eacScale;
+            if (sc < bestScore) { bestScore = sc; gatedGi = gi; bestPFg = pr.fg; bestPBg = pr.bg; }
+          }
+          const g = glyphs[gatedGi]!;
+          cells[cellIdx] = { ch: g.ch, fg: paletteSrgb(pal, bestPFg), bg: paletteSrgb(pal, bestPBg) };
         } else {
           cells[cellIdx] = { ch: ' ', fg: null, bg: encode(mean) };
         }
@@ -401,6 +445,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       if (cands) heapN = 0;
       let bestScore = Infinity;
       let bestGi = 0;
+      let bestPFg = 0, bestPBg = 0; // palette winner's (fg,bg) palette indices
       for (let gi = 0; gi < G; gi++) {
         const g = glyphs[gi]!;
         gStats.Sa1 = g.sumA;
@@ -408,6 +453,31 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         gStats.Saa = isQ4 ? g.sumAA + lam2 * g.gradAA : g.sumAA;
         const alpha = g.alpha, dxA = g.dxA, dyA = g.dyA;
         let score = 0;
+        if (pal) {
+          // Palette pair search: same per-channel saT/STT (Q4 edge augmentation folded in), but
+          // the fit argmins over discrete palette (fg,bg) pairs via sseAt (§3.2 (2)) instead of
+          // solving a continuous optimum. ST stays the plain per-channel sum (the S1T basis). The
+          // mdl ink penalty is applied identically to the truecolor path. All M1/M3 priors are
+          // guaranteed off here (rejected above), so no prior/heap bookkeeping runs.
+          for (let c = 0; c < 3; c++) {
+            const base = c * P;
+            let saT = 0;
+            for (let i = 0; i < P; i++) saT += alpha[i]! * T[base + i]!;
+            let stt = STT[c]!;
+            if (isQ4) {
+              let dot = 0;
+              for (let i = 0; i < P; i++) dot += dxA[i]! * dxT[base + i]! + dyA[i]! * dyT[base + i]!;
+              saT += lam2 * dot;
+              stt += lam2 * gradTT[c]!;
+            }
+            paSaT![c] = saT;
+            paSTT![c] = stt;
+          }
+          const pr = bestPair(gStats, paSaT!, ST, paSTT!, pal, refineK);
+          score = pr.score + opts.mdlLambda * g.ink * eacScale;
+          if (score < bestScore) { bestScore = score; bestGi = gi; bestPFg = pr.fg; bestPBg = pr.bg; }
+          continue;
+        }
         for (let c = 0; c < 3; c++) {
           const base = c * P;
           let saT = 0;
@@ -448,6 +518,15 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         if (oriBoundary) score -= orientationBonus(glyphOri![gi]!, oriTheta, oriWe, eacScale, orientKappa);
         if (cands) heapPush(score, gi);
         if (score < bestScore) { bestScore = score; bestGi = gi; }
+      }
+
+      // 2p. Palette winner emit — the winning glyph's best palette (fg,bg) pair, emitted as the
+      // exact sRGB u8 palette entries (no encode round-trip). Palette mode has no families/topK,
+      // so it never reaches the blocks below.
+      if (pal) {
+        const g = glyphs[bestGi]!;
+        cells[cellIdx] = { ch: g.ch, fg: paletteSrgb(pal, bestPFg), bg: paletteSrgb(pal, bestPBg) };
+        continue;
       }
 
       // 2a. §3.4 topK: materialize the ≤K best text candidates for this cell (sorted best

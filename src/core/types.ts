@@ -83,4 +83,14 @@ export interface MatchOptions {
   // M3 contour mechanisms (M3-SPEC §3). Both default off → output byte-identical.
   orientKappa?: number;  // κ ≥ 0, §3.3 in-scan orientation prior on boundary cells (uses aov.coverage/objectId, else 2D luma fallback).
   topK?: number;         // K ≥ 0, §3.4: also emit the top-K text candidates per cell into grid.cands (for the contour post-pass).
+
+  // Palette-constrained color depth (DESIGN §6, CPU path only; core/palette.ts). Default absent
+  // → truecolor, output byte-identical. Requires quality 3/4 (fg-bg). Per candidate glyph the fit
+  // argmins over a DISCRETE palette (fg,bg) pair grid instead of the continuous optimum, scored by
+  // the same sseAt (§3.2 (2)): 'theme16' = EXACT over 16×16 pairs; 'palette256' = APPROXIMATE
+  // project-then-refine over xterm-256 (top-k nearest to the unconstrained optimum, k×k exact).
+  // Not compatible with families/contour/topK/split/antibleed/style-albedo/collapse/orient (a
+  // clean hook point for selection priors in the constrained activity space — none implemented).
+  palette?: 'theme16' | 'palette256';
+  paletteRefineK?: number; // palette256 refine width k (≥1); default 8 (options.ts).
 }

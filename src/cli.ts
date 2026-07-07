@@ -44,6 +44,8 @@ async function bakeCmd(): Promise<void> {
       'orient-kappa': { type: 'string', default: '0' },
       contour: { type: 'boolean', default: false },
       'contour-kappa': { type: 'string', default: '0.15' },
+      palette: { type: 'string' },
+      'palette-k': { type: 'string' },
       o: { type: 'string' },
       html: { type: 'string' },
       png: { type: 'string' },
@@ -93,6 +95,7 @@ async function bakeCmd(): Promise<void> {
 
   const opts = defaultOptions(quality);
   opts.space = space;
+  applyPalette(opts, values.palette, values['palette-k']);
   const eta = parseFloat(values.split!);
   const kappa = parseFloat(values.antibleed!);
   const styleAlbedo = values['style-albedo']!;
@@ -172,6 +175,22 @@ function lumaField01(ref: { w: number; h: number; data: Float32Array }): Float32
   return out;
 }
 
+// Map the --palette flag (theme16|16 / palette256|256) onto MatchOptions. Palette modes are
+// CPU-only, Q3/Q4 (DESIGN §6); matchGrid enforces the quality/feature constraints.
+function applyPalette(opts: MatchOptions, palette: string | undefined, k: string | undefined): void {
+  if (!palette) return;
+  const p = palette === 'theme16' || palette === '16' ? 'theme16'
+    : palette === 'palette256' || palette === '256' ? 'palette256'
+      : undefined;
+  if (!p) { console.error('--palette must be theme16|256'); process.exit(2); }
+  opts.palette = p;
+  if (k) {
+    const kn = parseInt(k, 10);
+    if (!Number.isFinite(kn) || kn < 1) { console.error('--palette-k must be an integer >= 1'); process.exit(2); }
+    opts.paletteRefineK = kn;
+  }
+}
+
 async function main(): Promise<void> {
   if (argv[2] === 'bake') { await bakeCmd(); return; }
   const { values, positionals } = parseArgs({
@@ -186,6 +205,8 @@ async function main(): Promise<void> {
       'orient-kappa': { type: 'string', default: '0' },
       contour: { type: 'boolean', default: false },
       'contour-kappa': { type: 'string', default: '0.15' },
+      palette: { type: 'string' },
+      'palette-k': { type: 'string' },
       o: { type: 'string' },
       html: { type: 'string' },
       png: { type: 'string' },
@@ -195,7 +216,7 @@ async function main(): Promise<void> {
   });
 
   if (positionals[0] !== 'image' || !positionals[1]) {
-    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--orient-kappa N] [--contour --contour-kappa N] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const input = positionals[1];
@@ -213,6 +234,7 @@ async function main(): Promise<void> {
   const t0 = performance.now();
   const opts = defaultOptions(quality);
   opts.space = space;
+  applyPalette(opts, values.palette, values['palette-k']);
   // M3 §3.3/§3.4: orientation prior + contour post-pass. 2D image mode has no AOVs, so
   // both fall back to the reference luma (orientation via the luma edge field internally,
   // contour via a per-cell luma silhouette proxy). Q0 (ramp) has no per-cell candidates.
