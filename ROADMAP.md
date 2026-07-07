@@ -2,7 +2,7 @@
      Source of truth: tasks.yaml. Regenerated automatically on tasks.yaml edits. -->
 # Roadmap — glyphit3d
 
-**Progress:** 11/24 done · 0 active · 2 blocked · generated 2026-07-07 14:58 UTC @ `a6c5f48`
+**Progress:** 11/24 done · 0 active · 2 blocked · generated 2026-07-07 15:23 UTC @ `1635050`
 
 ```mermaid
 flowchart TD
@@ -42,8 +42,9 @@ flowchart TD
     classDef done fill:#c8e6c9,stroke:#2e7d32,color:#1b4332
     classDef dropped fill:#eeeeee,stroke:#bdbdbd,color:#9e9e9e,stroke-dasharray: 4 4
     class chore_adopt_jahns_workflow,perf_webgpu_matcher,chore_e2e_gpu_rendering,fix_rematch_single_flight,fix_gpu_matcher_p_guard,decision_profile_stats_objective_contract,docs_wgsl_mirror_kahan_comment,fix_e2e_liveness_frame_budget,docs_gpu_realtime_wording,chore_parity_adversarial_fixtures,fix_profile_hash_canonical done
-    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer,chore_compose_hero_canvas_types,chore_braille_charset_noop,fix_rematch_single_flight_gpu_race,fix_gpu_matcher_cstat_host_realloc,docs_profile_payload_external_contract pending
+    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer,chore_compose_hero_canvas_types,fix_rematch_single_flight_gpu_race,fix_gpu_matcher_cstat_host_realloc,docs_profile_payload_external_contract pending
     class feat_ascii_identity_selection,feat_shape_color_coupling blocked
+    class chore_braille_charset_noop dropped
 ```
 
 ## Tasks
@@ -52,7 +53,6 @@ flowchart TD
 |---|---|---|---|---|---|
 | `feat/ascii-identity-selection` | 구조 인지 문자 선택: 균일/밝은 영역엔 면적 큰 문자, 미묘한 gradient엔 조절된 작은 문자 | ⛔ blocked | — | docs/metric-redesign | DESIGN §6 |
 | `feat/shape-color-coupling` | 형태-색상 coupling: 셀 사각영역 전체 광량/조도 반영해 문자색 명도·채도 조절 | ⛔ blocked | — | docs/metric-redesign | DESIGN §6 |
-| `chore/braille-charset-noop` | braille 문자셋이 blocks와 byte-identical 출력(동일 hash) — DejaVuSansMono에 braille glyph 부재로 필터링돼 UI의 braille 선택이 사실상 no-op; 기존 동작, 폰트 종속 | ⬜ pending | — | — | — |
 | `chore/compose-hero-canvas-types` | 기존 tsc 실패: scripts/compose-hero.ts가 @napi-rs/canvas SvgCanvas vs Canvas 타입 불일치(37:3 TS2741, 61:17 TS2345) — 이번 라운드 무관, 릴리스 스크립트, HEAD부터 존재 | ⬜ pending | — | — | — |
 | `decision/public-repo-toggle` | private→public 전환 여부 (전환 시 Pages 웹 데모 자동 배포) | ⬜ pending | — | — | — |
 | `docs/metric-redesign` | 재구성 지표 재설계: SSIM 포화 → 셀 스케일 고주파 AC 구조 지표 + 물체 마스크 + 분포(하위 percentile) 보고, SSIM은 가드레일로 강등 | ⬜ pending | — | — | DESIGN §10 |
@@ -74,3 +74,4 @@ flowchart TD
 | `fix/profile-hash-canonical` | profileHash를 canonical payload 전체로 확장(Contract B, ADR-0001): verifyProfileHash+exporter가 coverage뿐 아니라 스칼라(sumA/sumAA/gradAA/ink)+폰트/셀 메타까지 해싱; 스칼라 변조 거부 테스트 추가; decodeProfile은 저장 스칼라 신뢰 유지 | ✅ done | 2026-07-07-review-fixes | decision/profile-stats-objective-contract | §5.4 |
 | `fix/rematch-single-flight` | rematch(): 단일 비행(seq/generation) 가드로 최신 run만 grid/raster/SSIM/perf를 commit — 느린 이전 run이 화면·export(json/ans/png)를 덮어쓰지 못하게. controls/ladder의 bare rematch()도 동일 큐를 타야 함 | ✅ done | 2026-07-07-review-fixes | — | — |
 | `perf/webgpu-matcher` | WebGPU WGSL matcher (근본 성능 개선) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §7 |
+| `chore/braille-charset-noop` | braille 문자셋이 blocks와 byte-identical 출력(동일 hash) — DejaVuSansMono에 braille glyph 부재로 필터링돼 UI의 braille 선택이 사실상 no-op; 기존 동작, 폰트 종속 | 🚫 dropped | — | — | — |

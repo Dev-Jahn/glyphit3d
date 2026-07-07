@@ -138,8 +138,9 @@ tasks:
     severity: "minor"
     origin: "gate-2026-07-07-review-fixes"
   - id: chore/braille-charset-noop
+    notes: "Dropped: 문서화된 의도 동작(controls.ts:8-11이 'byte-identical placebos with this font'로 명시, UI 메뉴에서 braille/full 제외, charsetNote로 안내). 버그 아님 — DejaVu 폰트 한계, font-profile 도입 시 실질화 예정"
     title: "braille 문자셋이 blocks와 byte-identical 출력(동일 hash) — DejaVuSansMono에 braille glyph 부재로 필터링돼 UI의 braille 선택이 사실상 no-op; 기존 동작, 폰트 종속"
-    status: "pending"
+    status: "dropped"
     severity: "minor"
     origin: "gate-2026-07-07-review-fixes"
   - id: fix/rematch-single-flight-gpu-race
