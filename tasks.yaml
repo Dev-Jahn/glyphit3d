@@ -74,6 +74,7 @@ tasks:
     anchor: "DESIGN §10"
     origin: "GPU 오진 정정 2026-07-07"
   - id: perf/gpu-rasterizer
+    notes: "OQ1(re-review): raster를 GPU로 옮길 때 e2e check-7의 loose maxGap<250 ceiling도 실제 frame-budget(~50ms long-task)로 조이고 'interactive smooth' 문구 검증. 현재 check는 '한 덩어리 main-thread block 아님'만 보증"
     title: "GPU 경로의 메인스레드 CPU 래스터(~96ms)를 GPU로 — WebGPU 매처 후 남은 인터랙티브 병목"
     status: "pending"
     deps: ["perf/webgpu-matcher"]
@@ -141,3 +142,22 @@ tasks:
     status: "pending"
     severity: "minor"
     origin: "gate-2026-07-07-review-fixes"
+  - id: fix/rematch-single-flight-gpu-race
+    title: "모든 rematch(control/ladder/orbit)를 단일 큐로 직렬화 — 공유 GpuMatcher staging buffer의 host map-state 경합 차단(F1R-1). seq 가드는 stale commit만 막고 동시 gpu.match() 재진입은 못 막아 최신 run wrong-frame/noisy CPU fallback 발생"
+    status: "pending"
+    severity: "major"
+    origin: "review-2026-07-07-review-fixes"
+    notes: "F1R-1 re-review; extends done fix/rematch-single-flight (commit-only guard). Pre-existing shared-instance race. Smallest fix: route __app.rematch through requestRematch coalescing loop"
+  - id: fix/gpu-matcher-cstat-host-realloc
+    title: "gpu-matcher: cstatHost를 자체 numCells*16 조건으로 재할당(현재 targetHost.length==numCells*3*P 단일 조건에 편승, F2R-1) — numCells*P 동률·numCells 증가 시 cstatHost stale→tail셀 stats 0→P≤256라 fallback 없이 silent 오출력. 충돌쌍 host-scratch 단위테스트 추가"
+    status: "pending"
+    severity: "major"
+    origin: "review-2026-07-07-review-fixes"
+    notes: "F2R-1 re-review; extends done fix/gpu-matcher-p-guard. gpu-matcher.ts:213-216. one-directional silent (numCells 증가), 감소는 throw→fallback"
+  - id: docs/profile-payload-external-contract
+    title: "OQ2: F3 Contract B canonical payload는 외부 profile generator에 강한 계약 — 브라우저 'TTF로 프로파일 생성' 도구 착수 시 buildCanonicalPayload를 공유 lib로 노출하거나 독립 구현은 profile version bump 강제"
+    status: "pending"
+    severity: "minor"
+    anchor: "§5.4"
+    origin: "review-2026-07-07-review-fixes"
+    notes: "forward constraint for future browser TTF profiling; from re-review OQ2"

@@ -2,7 +2,7 @@
      Source of truth: tasks.yaml. Regenerated automatically on tasks.yaml edits. -->
 # Roadmap — glyphit3d
 
-**Progress:** 11/21 done · 0 active · 2 blocked · generated 2026-07-07 13:26 UTC @ `09447b1`
+**Progress:** 11/24 done · 0 active · 2 blocked · generated 2026-07-07 14:58 UTC @ `a6c5f48`
 
 ```mermaid
 flowchart TD
@@ -28,6 +28,9 @@ flowchart TD
         fix_profile_hash_canonical["<b>fix/profile-hash-canonical</b><br/>profileHash를 canonical<br/>payload 전체로 확장(Contract B,<br/>ADR-0001): verifyProfileHa<br/>sh+exporter가 coverage뿐 아니라<br/>스칼라(sumA/sumAA/gradAA/ink)<br/>+폰트/셀 메타까지 해싱; 스칼라 변조 거부<br/>테스트 추가; decodeProfile은 저장<br/>스칼라 신뢰 유지"]
         chore_compose_hero_canvas_types["<b>chore/compose-hero-canvas-types</b><br/>기존 tsc 실패:<br/>scripts/compose-hero.ts가<br/>@napi-rs/canvas SvgCanvas<br/>vs Canvas 타입 불일치(37:3<br/>TS2741, 61:17 TS2345) — 이번<br/>라운드 무관, 릴리스 스크립트, HEAD부터<br/>존재"]
         chore_braille_charset_noop["<b>chore/braille-charset-noop</b><br/>braille 문자셋이 blocks와 byte-<br/>identical 출력(동일 hash) —<br/>DejaVuSansMono에 braille<br/>glyph 부재로 필터링돼 UI의 braille<br/>선택이 사실상 no-op; 기존 동작, 폰트<br/>종속"]
+        fix_rematch_single_flight_gpu_race["<b>fix/rematch-single-flight-gpu-race</b><br/>모든 rematch(control/ladder/<br/>orbit)를 단일 큐로 직렬화 — 공유<br/>GpuMatcher staging buffer의<br/>host map-state 경합<br/>차단(F1R-1). seq 가드는 stale<br/>commit만 막고 동시 gpu.match()<br/>재진입은 못 막아 최신 run wrong-<br/>frame/noisy CPU fallback<br/>발생"]
+        fix_gpu_matcher_cstat_host_realloc["<b>fix/gpu-matcher-cstat-host-realloc</b><br/>gpu-matcher: cstatHost를 자체<br/>numCells*16 조건으로 재할당(현재 ta<br/>rgetHost.length==numCells*<br/>3*P 단일 조건에 편승, F2R-1) —<br/>numCells*P 동률·numCells 증가<br/>시 cstatHost stale→tail셀<br/>stats 0→P≤256라 fallback 없이<br/>silent 오출력. 충돌쌍 host-<br/>scratch 단위테스트 추가"]
+        docs_profile_payload_external_contract["<b>docs/profile-payload-external-contract</b><br/>OQ2: F3 Contract B<br/>canonical payload는 외부<br/>profile generator에 강한 계약 —<br/>브라우저 'TTF로 프로파일 생성' 도구 착수<br/>시 buildCanonicalPayload를<br/>공유 lib로 노출하거나 독립 구현은<br/>profile version bump 강제"]
     end
     docs_metric_redesign --> feat_ascii_identity_selection
     docs_metric_redesign --> feat_shape_color_coupling
@@ -39,7 +42,7 @@ flowchart TD
     classDef done fill:#c8e6c9,stroke:#2e7d32,color:#1b4332
     classDef dropped fill:#eeeeee,stroke:#bdbdbd,color:#9e9e9e,stroke-dasharray: 4 4
     class chore_adopt_jahns_workflow,perf_webgpu_matcher,chore_e2e_gpu_rendering,fix_rematch_single_flight,fix_gpu_matcher_p_guard,decision_profile_stats_objective_contract,docs_wgsl_mirror_kahan_comment,fix_e2e_liveness_frame_budget,docs_gpu_realtime_wording,chore_parity_adversarial_fixtures,fix_profile_hash_canonical done
-    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer,chore_compose_hero_canvas_types,chore_braille_charset_noop pending
+    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer,chore_compose_hero_canvas_types,chore_braille_charset_noop,fix_rematch_single_flight_gpu_race,fix_gpu_matcher_cstat_host_realloc,docs_profile_payload_external_contract pending
     class feat_ascii_identity_selection,feat_shape_color_coupling blocked
 ```
 
@@ -53,9 +56,12 @@ flowchart TD
 | `chore/compose-hero-canvas-types` | 기존 tsc 실패: scripts/compose-hero.ts가 @napi-rs/canvas SvgCanvas vs Canvas 타입 불일치(37:3 TS2741, 61:17 TS2345) — 이번 라운드 무관, 릴리스 스크립트, HEAD부터 존재 | ⬜ pending | — | — | — |
 | `decision/public-repo-toggle` | private→public 전환 여부 (전환 시 Pages 웹 데모 자동 배포) | ⬜ pending | — | — | — |
 | `docs/metric-redesign` | 재구성 지표 재설계: SSIM 포화 → 셀 스케일 고주파 AC 구조 지표 + 물체 마스크 + 분포(하위 percentile) 보고, SSIM은 가드레일로 강등 | ⬜ pending | — | — | DESIGN §10 |
+| `docs/profile-payload-external-contract` | OQ2: F3 Contract B canonical payload는 외부 profile generator에 강한 계약 — 브라우저 'TTF로 프로파일 생성' 도구 착수 시 buildCanonicalPayload를 공유 lib로 노출하거나 독립 구현은 profile version bump 강제 | ⬜ pending | — | — | §5.4 |
 | `feat/contrast-floor-fill` | 어두운 영역 검은 구멍 잔여분: fitted-path invisibility(검정 위 dim fg) 대비 하한 제약 | ⬜ pending | — | — | DESIGN §3 |
 | `feat/palette-constrained-color` | palette-256/theme16 제약 색 모드 (디더 배리어·M1 prior 활동 공간) | ⬜ pending | — | — | DESIGN §6 |
 | `feat/temporal-animation` | temporal/애니메이션: motion-vector hysteresis, delta frames | ⬜ pending | — | — | DESIGN §4 |
+| `fix/gpu-matcher-cstat-host-realloc` | gpu-matcher: cstatHost를 자체 numCells*16 조건으로 재할당(현재 targetHost.length==numCells*3*P 단일 조건에 편승, F2R-1) — numCells*P 동률·numCells 증가 시 cstatHost stale→tail셀 stats 0→P≤256라 fallback 없이 silent 오출력. 충돌쌍 host-scratch 단위테스트 추가 | ⬜ pending | — | — | — |
+| `fix/rematch-single-flight-gpu-race` | 모든 rematch(control/ladder/orbit)를 단일 큐로 직렬화 — 공유 GpuMatcher staging buffer의 host map-state 경합 차단(F1R-1). seq 가드는 stale commit만 막고 동시 gpu.match() 재진입은 못 막아 최신 run wrong-frame/noisy CPU fallback 발생 | ⬜ pending | — | — | — |
 | `perf/gpu-rasterizer` | GPU 경로의 메인스레드 CPU 래스터(~96ms)를 GPU로 — WebGPU 매처 후 남은 인터랙티브 병목 | ⬜ pending | — | perf/webgpu-matcher | DESIGN §7 |
 | `chore/adopt-jahns-workflow` | jahns-workflow 하네스 도입 (SSOT/tasks/packet 리뷰) | ✅ done | 2026-07-07-adopt-harness | — | — |
 | `chore/e2e-gpu-rendering` | e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §10 |
