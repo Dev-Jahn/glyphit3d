@@ -1,7 +1,7 @@
 // M2 E2E verify instrument (M2-SPEC §4, §5). Standalone tsx script — NOT vitest,
 // NOT @playwright/test. Drives the vite dev app (checks 1-8) and a vite build+preview
-// artifact (check 9) with plain `playwright` + node:assert, headless Chromium under
-// SwiftShader (no WebGPU here, by design — spec header). Run: `npm run e2e`.
+// artifact (check 9) with plain `playwright` + node:assert, headless Chromium on the
+// local NVIDIA GPU via ANGLE-Vulkan (WebGL2, not WebGPU — spec header). Run: `npm run e2e`.
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -13,8 +13,9 @@ import { build, createServer, preview, type PreviewServer, type ViteDevServer } 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web');
 const configFile = resolve(webRoot, 'vite.config.ts');
 
-// SwiftShader WebGL under headless Chromium (the M2 CPU floor — spec header).
-const LAUNCH_ARGS = ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--ignore-gpu-blocklist'];
+// GPU-accelerated WebGL2 via ANGLE-Vulkan on the local NVIDIA GPU; SwiftShader was a
+// CPU floor (render ~300ms), now removed.
+const LAUNCH_ARGS = ['--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--no-sandbox'];
 
 const ESC = '\x1b';
 
@@ -82,6 +83,16 @@ function canvasRange(sel: string): { mn: number; mx: number; w: number; h: numbe
   let mn = 255, mx = 0;
   for (let i = 0; i < d.length; i += 4) { const v = d[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
   return { mn, mx, w: c.width, h: c.height };
+}
+
+// UNMASKED_RENDERER of a canvas's existing WebGL2 context — proves the GPU path
+// (ANGLE-Vulkan on NVIDIA) rather than the removed SwiftShader CPU floor. getContext
+// re-fetches the context three.js already created; the debug ext exposes the real GPU.
+function webglRenderer(sel: string): string {
+  const c = document.querySelector(sel);
+  const gl = c.getContext('webgl2');
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  return String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
 }
 
 // Cheap strided checksum of a 2D canvas's pixels.
@@ -166,11 +177,16 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
   const out0 = await page.evaluate('(()=>{const o=window.__app.getOutput();return {t:o.timings,ssim:o.ssim,params:window.__app.getState().params,w:o.raster.w,h:o.raster.h};})()') as any;
   perf = out0.t;
 
-  await check(1, 'Page loads, default torus knot renders (canvas non-blank)', async () => {
+  await check(1, 'Page loads, default torus knot renders (canvas non-blank) on the GPU', async () => {
     const r = await page.evaluate(canvasRange, '#scene');
     assert.ok(r.w > 0 && r.h > 0, 'scene canvas has no drawing buffer');
     assert.ok(r.mx - r.mn > 10, `scene canvas appears blank (range ${r.mn}..${r.mx})`);
-    return `#scene ${r.w}x${r.h}, luma range ${r.mn}..${r.mx}; default SSIM ${out0.ssim.toFixed(4)}`;
+    // GPU-path guard: #scene's three.js WebGL2 must run on the NVIDIA GPU (ANGLE-Vulkan),
+    // not the removed SwiftShader software floor.
+    const renderer = await page.evaluate(webglRenderer, '#scene');
+    assert.ok(!/swiftshader/i.test(renderer), `#scene WebGL2 fell back to SwiftShader software: ${renderer}`);
+    assert.ok(/nvidia/i.test(renderer), `#scene WebGL2 renderer is not the NVIDIA GPU: ${renderer}`);
+    return `#scene ${r.w}x${r.h}, luma range ${r.mn}..${r.mx}; default SSIM ${out0.ssim.toFixed(4)}; GPU "${renderer}"`;
   });
 
   await check(2, 'Ladder Q0→Q3: different grids, SSIM(Q3) > SSIM(Q0), badge updates', async () => {
