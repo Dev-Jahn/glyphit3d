@@ -2,7 +2,7 @@
      Source of truth: tasks.yaml. Regenerated automatically on tasks.yaml edits. -->
 # Roadmap — glyphit3d
 
-**Progress:** 4/19 done · 0 active · 2 blocked · generated 2026-07-07 11:58 UTC @ `c9a141e`
+**Progress:** 11/21 done · 0 active · 2 blocked · generated 2026-07-07 13:26 UTC @ `09447b1`
 
 ```mermaid
 flowchart TD
@@ -26,6 +26,8 @@ flowchart TD
         docs_gpu_realtime_wording["<b>docs/gpu-realtime-wording</b><br/>README 헤드라인 'GPU-real-<br/>time' 문구 축소(O3): 'WebGPU<br/>Q3 matcher shipped; full<br/>GPU raster/temporal<br/>coherence remain follow-<br/>ups' — 메인스레드 raster ~96ms<br/>잔존 반영"]
         chore_parity_adversarial_fixtures["<b>chore/parity-adversarial-fixtures</b><br/>parity harness 적대적 fixture<br/>보강(O1): synthetic high-<br/>DC/low-AC 셀, gateTau 경계,<br/>exact/near-tie lower-gi 보존<br/>property, P/G sweep —<br/>'byte-exact'를 유한 14-config<br/>sweep 너머로 확장"]
         fix_profile_hash_canonical["<b>fix/profile-hash-canonical</b><br/>profileHash를 canonical<br/>payload 전체로 확장(Contract B,<br/>ADR-0001): verifyProfileHa<br/>sh+exporter가 coverage뿐 아니라<br/>스칼라(sumA/sumAA/gradAA/ink)<br/>+폰트/셀 메타까지 해싱; 스칼라 변조 거부<br/>테스트 추가; decodeProfile은 저장<br/>스칼라 신뢰 유지"]
+        chore_compose_hero_canvas_types["<b>chore/compose-hero-canvas-types</b><br/>기존 tsc 실패:<br/>scripts/compose-hero.ts가<br/>@napi-rs/canvas SvgCanvas<br/>vs Canvas 타입 불일치(37:3<br/>TS2741, 61:17 TS2345) — 이번<br/>라운드 무관, 릴리스 스크립트, HEAD부터<br/>존재"]
+        chore_braille_charset_noop["<b>chore/braille-charset-noop</b><br/>braille 문자셋이 blocks와 byte-<br/>identical 출력(동일 hash) —<br/>DejaVuSansMono에 braille<br/>glyph 부재로 필터링돼 UI의 braille<br/>선택이 사실상 no-op; 기존 동작, 폰트<br/>종속"]
     end
     docs_metric_redesign --> feat_ascii_identity_selection
     docs_metric_redesign --> feat_shape_color_coupling
@@ -36,8 +38,8 @@ flowchart TD
     classDef blocked fill:#ffcdd2,stroke:#c62828,color:#7f1d1d
     classDef done fill:#c8e6c9,stroke:#2e7d32,color:#1b4332
     classDef dropped fill:#eeeeee,stroke:#bdbdbd,color:#9e9e9e,stroke-dasharray: 4 4
-    class chore_adopt_jahns_workflow,perf_webgpu_matcher,chore_e2e_gpu_rendering,decision_profile_stats_objective_contract done
-    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer,fix_rematch_single_flight,fix_gpu_matcher_p_guard,docs_wgsl_mirror_kahan_comment,fix_e2e_liveness_frame_budget,docs_gpu_realtime_wording,chore_parity_adversarial_fixtures,fix_profile_hash_canonical pending
+    class chore_adopt_jahns_workflow,perf_webgpu_matcher,chore_e2e_gpu_rendering,fix_rematch_single_flight,fix_gpu_matcher_p_guard,decision_profile_stats_objective_contract,docs_wgsl_mirror_kahan_comment,fix_e2e_liveness_frame_budget,docs_gpu_realtime_wording,chore_parity_adversarial_fixtures,fix_profile_hash_canonical done
+    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer,chore_compose_hero_canvas_types,chore_braille_charset_noop pending
     class feat_ascii_identity_selection,feat_shape_color_coupling blocked
 ```
 
@@ -47,20 +49,22 @@ flowchart TD
 |---|---|---|---|---|---|
 | `feat/ascii-identity-selection` | 구조 인지 문자 선택: 균일/밝은 영역엔 면적 큰 문자, 미묘한 gradient엔 조절된 작은 문자 | ⛔ blocked | — | docs/metric-redesign | DESIGN §6 |
 | `feat/shape-color-coupling` | 형태-색상 coupling: 셀 사각영역 전체 광량/조도 반영해 문자색 명도·채도 조절 | ⛔ blocked | — | docs/metric-redesign | DESIGN §6 |
-| `chore/parity-adversarial-fixtures` | parity harness 적대적 fixture 보강(O1): synthetic high-DC/low-AC 셀, gateTau 경계, exact/near-tie lower-gi 보존 property, P/G sweep — 'byte-exact'를 유한 14-config sweep 너머로 확장 | ⬜ pending | — | — | — |
+| `chore/braille-charset-noop` | braille 문자셋이 blocks와 byte-identical 출력(동일 hash) — DejaVuSansMono에 braille glyph 부재로 필터링돼 UI의 braille 선택이 사실상 no-op; 기존 동작, 폰트 종속 | ⬜ pending | — | — | — |
+| `chore/compose-hero-canvas-types` | 기존 tsc 실패: scripts/compose-hero.ts가 @napi-rs/canvas SvgCanvas vs Canvas 타입 불일치(37:3 TS2741, 61:17 TS2345) — 이번 라운드 무관, 릴리스 스크립트, HEAD부터 존재 | ⬜ pending | — | — | — |
 | `decision/public-repo-toggle` | private→public 전환 여부 (전환 시 Pages 웹 데모 자동 배포) | ⬜ pending | — | — | — |
-| `docs/gpu-realtime-wording` | README 헤드라인 'GPU-real-time' 문구 축소(O3): 'WebGPU Q3 matcher shipped; full GPU raster/temporal coherence remain follow-ups' — 메인스레드 raster ~96ms 잔존 반영 | ⬜ pending | — | — | — |
 | `docs/metric-redesign` | 재구성 지표 재설계: SSIM 포화 → 셀 스케일 고주파 AC 구조 지표 + 물체 마스크 + 분포(하위 percentile) 보고, SSIM은 가드레일로 강등 | ⬜ pending | — | — | DESIGN §10 |
-| `docs/wgsl-mirror-kahan-comment` | wgsl-mirror.ts stale Kahan 주석 정정: 커널은 8-way-blocked raw cross 후 saTc=saT−Sa1·mean (matcher-wgsl.ts 헤더와 동일 표현으로); 수치 무영향 doc drift | ⬜ pending | — | — | — |
 | `feat/contrast-floor-fill` | 어두운 영역 검은 구멍 잔여분: fitted-path invisibility(검정 위 dim fg) 대비 하한 제약 | ⬜ pending | — | — | DESIGN §3 |
 | `feat/palette-constrained-color` | palette-256/theme16 제약 색 모드 (디더 배리어·M1 prior 활동 공간) | ⬜ pending | — | — | DESIGN §6 |
 | `feat/temporal-animation` | temporal/애니메이션: motion-vector hysteresis, delta frames | ⬜ pending | — | — | DESIGN §4 |
-| `fix/e2e-liveness-frame-budget` | e2e check-7 정정: GPU 경로 raster는 메인스레드 동기(~96ms, 주석의 off-thread는 오기), vacuous한 maxGap<dur를 실제 프레임예산 임계(longtask/maxGap<~50ms)로 교체 | ⬜ pending | — | — | — |
-| `fix/gpu-matcher-p-guard` | GpuMatcher: ensureCellBuffers 캐시 키에 P 포함(numCells만 아님)하고 P>256 거부/상한(WGSL sT array<f32,768>=3·256 고정으로 첫 run부터 OOB); same-numCells/different-P 회귀 테스트 추가 | ⬜ pending | — | — | §5.2 |
-| `fix/profile-hash-canonical` | profileHash를 canonical payload 전체로 확장(Contract B, ADR-0001): verifyProfileHash+exporter가 coverage뿐 아니라 스칼라(sumA/sumAA/gradAA/ink)+폰트/셀 메타까지 해싱; 스칼라 변조 거부 테스트 추가; decodeProfile은 저장 스칼라 신뢰 유지 | ⬜ pending | — | decision/profile-stats-objective-contract | §5.4 |
-| `fix/rematch-single-flight` | rematch(): 단일 비행(seq/generation) 가드로 최신 run만 grid/raster/SSIM/perf를 commit — 느린 이전 run이 화면·export(json/ans/png)를 덮어쓰지 못하게. controls/ladder의 bare rematch()도 동일 큐를 타야 함 | ⬜ pending | — | — | — |
 | `perf/gpu-rasterizer` | GPU 경로의 메인스레드 CPU 래스터(~96ms)를 GPU로 — WebGPU 매처 후 남은 인터랙티브 병목 | ⬜ pending | — | perf/webgpu-matcher | DESIGN §7 |
 | `chore/adopt-jahns-workflow` | jahns-workflow 하네스 도입 (SSOT/tasks/packet 리뷰) | ✅ done | 2026-07-07-adopt-harness | — | — |
 | `chore/e2e-gpu-rendering` | e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §10 |
+| `chore/parity-adversarial-fixtures` | parity harness 적대적 fixture 보강(O1): synthetic high-DC/low-AC 셀, gateTau 경계, exact/near-tie lower-gi 보존 property, P/G sweep — 'byte-exact'를 유한 14-config sweep 너머로 확장 | ✅ done | 2026-07-07-review-fixes | — | — |
 | `decision/profile-stats-objective-contract` | 프로파일 scalar stats(sumA/sumAA/gradAA/ink) objective 계약 확정: hash 대상 truth(Contract B, hash 범위 확대)인가 coverage에서 decode-time 재계산(Contract A, DESIGN §5.4/§5.2)인가 — 현재 B 데이터모델+A hash 범위 혼종이 무결성 공백 | ✅ done | — | — | §5.4 |
+| `docs/gpu-realtime-wording` | README 헤드라인 'GPU-real-time' 문구 축소(O3): 'WebGPU Q3 matcher shipped; full GPU raster/temporal coherence remain follow-ups' — 메인스레드 raster ~96ms 잔존 반영 | ✅ done | 2026-07-07-review-fixes | — | — |
+| `docs/wgsl-mirror-kahan-comment` | wgsl-mirror.ts stale Kahan 주석 정정: 커널은 8-way-blocked raw cross 후 saTc=saT−Sa1·mean (matcher-wgsl.ts 헤더와 동일 표현으로); 수치 무영향 doc drift | ✅ done | 2026-07-07-review-fixes | — | — |
+| `fix/e2e-liveness-frame-budget` | e2e check-7 정정: GPU 경로 raster는 메인스레드 동기(~96ms, 주석의 off-thread는 오기), vacuous한 maxGap<dur를 실제 프레임예산 임계(longtask/maxGap<~50ms)로 교체 | ✅ done | 2026-07-07-review-fixes | — | — |
+| `fix/gpu-matcher-p-guard` | GpuMatcher: ensureCellBuffers 캐시 키에 P 포함(numCells만 아님)하고 P>256 거부/상한(WGSL sT array<f32,768>=3·256 고정으로 첫 run부터 OOB); same-numCells/different-P 회귀 테스트 추가 | ✅ done | 2026-07-07-review-fixes | — | §5.2 |
+| `fix/profile-hash-canonical` | profileHash를 canonical payload 전체로 확장(Contract B, ADR-0001): verifyProfileHash+exporter가 coverage뿐 아니라 스칼라(sumA/sumAA/gradAA/ink)+폰트/셀 메타까지 해싱; 스칼라 변조 거부 테스트 추가; decodeProfile은 저장 스칼라 신뢰 유지 | ✅ done | 2026-07-07-review-fixes | decision/profile-stats-objective-contract | §5.4 |
+| `fix/rematch-single-flight` | rematch(): 단일 비행(seq/generation) 가드로 최신 run만 grid/raster/SSIM/perf를 commit — 느린 이전 run이 화면·export(json/ans/png)를 덮어쓰지 못하게. controls/ladder의 bare rematch()도 동일 큐를 타야 함 | ✅ done | 2026-07-07-review-fixes | — | — |
 | `perf/webgpu-matcher` | WebGPU WGSL matcher (근본 성능 개선) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §7 |
