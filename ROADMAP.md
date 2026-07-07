@@ -2,7 +2,7 @@
      Source of truth: tasks.yaml. Regenerated automatically on tasks.yaml edits. -->
 # Roadmap — glyphit3d
 
-**Progress:** 3/10 done · 0 active · 2 blocked · generated 2026-07-07 05:55 UTC @ `4a8f78f`
+**Progress:** 3/11 done · 0 active · 2 blocked · generated 2026-07-07 07:45 UTC @ `78e4789`
 
 ```mermaid
 flowchart TD
@@ -17,16 +17,18 @@ flowchart TD
         feat_palette_constrained_color["<b>feat/palette-constrained-color</b><br/>palette-256/theme16 제약 색<br/>모드 (디더 배리어·M1 prior 활동 공간)"]
         feat_temporal_animation["<b>feat/temporal-animation</b><br/>temporal/애니메이션: motion-<br/>vector hysteresis, delta<br/>frames"]
         chore_e2e_gpu_rendering["<b>chore/e2e-gpu-rendering</b><br/>e2e/verify Chromium을<br/>SwiftShader에서 --use-<br/>angle=vulkan으로 전환 (실 GPU<br/>렌더, 실사용자 환경 대변)"]
+        perf_gpu_rasterizer["<b>perf/gpu-rasterizer</b><br/>GPU 경로의 메인스레드 CPU<br/>래스터(~96ms)를 GPU로 — WebGPU<br/>매처 후 남은 인터랙티브 병목"]
     end
     docs_metric_redesign --> feat_ascii_identity_selection
     docs_metric_redesign --> feat_shape_color_coupling
+    perf_webgpu_matcher --> perf_gpu_rasterizer
     classDef pending fill:#f5f5f5,stroke:#9e9e9e,color:#424242
     classDef active fill:#bbdefb,stroke:#1565c0,color:#0d2b56,stroke-width:2px
     classDef blocked fill:#ffcdd2,stroke:#c62828,color:#7f1d1d
     classDef done fill:#c8e6c9,stroke:#2e7d32,color:#1b4332
     classDef dropped fill:#eeeeee,stroke:#bdbdbd,color:#9e9e9e,stroke-dasharray: 4 4
     class chore_adopt_jahns_workflow,perf_webgpu_matcher,chore_e2e_gpu_rendering done
-    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation pending
+    class docs_metric_redesign,feat_contrast_floor_fill,decision_public_repo_toggle,feat_palette_constrained_color,feat_temporal_animation,perf_gpu_rasterizer pending
     class feat_ascii_identity_selection,feat_shape_color_coupling blocked
 ```
 
@@ -41,6 +43,7 @@ flowchart TD
 | `feat/contrast-floor-fill` | 어두운 영역 검은 구멍 잔여분: fitted-path invisibility(검정 위 dim fg) 대비 하한 제약 | ⬜ pending | — | — | DESIGN §3 |
 | `feat/palette-constrained-color` | palette-256/theme16 제약 색 모드 (디더 배리어·M1 prior 활동 공간) | ⬜ pending | — | — | DESIGN §6 |
 | `feat/temporal-animation` | temporal/애니메이션: motion-vector hysteresis, delta frames | ⬜ pending | — | — | DESIGN §4 |
+| `perf/gpu-rasterizer` | GPU 경로의 메인스레드 CPU 래스터(~96ms)를 GPU로 — WebGPU 매처 후 남은 인터랙티브 병목 | ⬜ pending | — | perf/webgpu-matcher | DESIGN §7 |
 | `chore/adopt-jahns-workflow` | jahns-workflow 하네스 도입 (SSOT/tasks/packet 리뷰) | ✅ done | 2026-07-07-adopt-harness | — | — |
 | `chore/e2e-gpu-rendering` | e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §10 |
 | `perf/webgpu-matcher` | WebGPU WGSL matcher (근본 성능 개선) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §7 |
