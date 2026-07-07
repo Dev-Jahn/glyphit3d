@@ -210,8 +210,17 @@ export class GpuMatcher {
     // uploaded T and the gate scalar are byte-identical to src/core/match.ts (Q3 needs none of
     // cellStats' gradient/luma work, and this avoids 5300 per-cell array allocations). eacScale
     // + gate + gated-cell emit stay on the CPU (byte-identical to matchGrid).
+    // F2R-1: each reused host-scratch array MUST size on its OWN dimension. cstatHost is
+    // numCells·16; targetHost is numCells·3·P. Piggybacking cstatHost on targetHost's condition
+    // is a latent silent bug — a (numCells, P) change that holds numCells·3·P constant (e.g.
+    // numCells 100↔200 with P 64↔32) leaves targetHost's length unchanged, so cstatHost never
+    // reallocates: on a numCells INCREASE the tail-cell stat writes fall past cstatHost's end
+    // (silently dropped by JS typed arrays) and upload as zeros → wrong output with no throw
+    // (P ≤ 256, so no CPU-pool fallback). Independent conditions close the collision.
     if (!this.targetHost || this.targetHost.length !== numCells * 3 * P) {
       this.targetHost = new Float32Array(numCells * 3 * P);
+    }
+    if (!this.cstatHost || this.cstatHost.length !== numCells * 16) {
       this.cstatHost = new Float32Array(numCells * 16);
     }
     const targetHost = this.targetHost;

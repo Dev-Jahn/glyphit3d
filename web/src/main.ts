@@ -2,6 +2,7 @@ import { Scene } from './scene.js';
 import { Pipeline, type PipelineOutput } from './pipeline.js';
 import { loadProfile } from './profile.js';
 import { renderPerf } from './perf.js';
+import { createCoalescer } from './coalescer.js';
 import type { Atlas } from '../../src/core/types.js';
 import './ui/index.js';
 
@@ -35,8 +36,9 @@ let last: PipelineOutput | null = null;
 // P1: interactive runs skip SSIM (out.ssim === null). Keep the last COMPUTED ssim so the
 // badge/state can hold it across ssim-less interactive frames.
 let lastSsim: number | null = null;
-// Active-run counter, not a boolean: requestRematch holds one extra count across its
-// whole coalescing loop so busy never blips false between iterations. busy = count>0.
+// Per-run active counter for busy: rematch() holds one across its own body. The coalescer
+// (below) holds `busy` true across the WHOLE drain loop, so getState().busy ORs both and never
+// blips false between iterations. busy = busyCount>0 || coalescer.busy.
 let busyCount = 0;
 // F1 single-flight: monotonic run id. Every rematch() captures one before its first await;
 // a resolved run commits ONLY if it is still the latest (mySeq === rematchSeq), so a slow
@@ -93,46 +95,28 @@ async function rematch(interactive = false): Promise<void> {
   }
 }
 
-// Coalescing single-flight for orbit-driven rematches: a request during an in-flight
-// run only marks the pose dirty; the running loop re-matches once more when it drains
-// (so the final pose always wins). The held count keeps busy true across the loop.
-// P1: the loop carries the STRICTEST pending requirement — if any request queued during a
-// run was non-interactive, the drain run computes SSIM (interactive = false).
-let coalescing = false;
-let dirty = false;
-let pendingNonInteractive = false;
-async function requestRematch(interactive: boolean): Promise<void> {
-  if (coalescing) {
-    dirty = true;
-    if (!interactive) pendingNonInteractive = true;
-    return;
-  }
-  coalescing = true;
-  busyCount++;
-  let runInteractive = interactive;
-  try {
-    do {
-      dirty = false;
-      pendingNonInteractive = false;
-      await rematch(runInteractive);
-      runInteractive = !pendingNonInteractive; // a queued non-interactive request forces SSIM
-    } while (dirty);
-  } finally {
-    busyCount--;
-    coalescing = false;
-  }
-}
+// F1R-1: EVERY rematch entry point (orbit drag, UI controls, quality ladder, drag-drop, the
+// initial render, and the Playwright __app.rematch surface) is funnelled through ONE
+// single-flight coalescing queue so at most one pipeline.run()/gpu.match() is ever in flight —
+// concurrent re-entry would race the shared GpuMatcher's staging-buffer host map-state. A
+// request during an in-flight run only marks the work dirty; the running loop re-matches once
+// more when it drains (so the final request always wins). `coalescer.busy` stays true across
+// the loop, so busy never blips false between iterations. The loop carries the STRICTEST
+// pending requirement — if any request queued during a run was non-interactive, the drain run
+// computes SSIM (interactive = false). The seq guard inside rematch() stays as belt-and-
+// suspenders against a stale commit.
+const coalescer = createCoalescer(rematch);
 
 scene.onOrbitMove = () => {
   params.yaw = scene.yawDeg;
   params.pitch = scene.pitchDeg;
-  void requestRematch(true); // mid-drag frames skip SSIM
+  void coalescer.request(true); // mid-drag frames skip SSIM
 };
 
 scene.onOrbitEnd = () => {
   params.yaw = scene.yawDeg;
   params.pitch = scene.pitchDeg;
-  void requestRematch(false); // the settled pose computes SSIM
+  void coalescer.request(false); // the settled pose computes SSIM
 };
 
 // Drag & drop a .glb/.gltf to replace the model.
@@ -142,7 +126,7 @@ document.addEventListener('drop', (e) => {
   const file = e.dataTransfer?.files?.[0];
   if (!file || !/\.(glb|gltf)$/i.test(file.name)) return;
   const url = URL.createObjectURL(file);
-  void scene.loadGLB(url).then(() => { params.yaw = scene.yawDeg; params.pitch = scene.pitchDeg; return rematch(); });
+  void scene.loadGLB(url).then(() => { params.yaw = scene.yawDeg; params.pitch = scene.pitchDeg; return coalescer.request(false); });
 });
 
 // Playwright / UI control surface.
@@ -161,9 +145,11 @@ declare global {
 }
 
 window.__app = {
-  rematch,
+  // F1R-1: the public rematch surface routes through the coalescer too, so a Playwright/UI
+  // rematch can never overlap an in-flight orbit/GPU match on the shared GpuMatcher.
+  rematch: () => coalescer.request(false),
   setParams: (p) => { Object.assign(params, p); },
-  getState: () => ({ params: { ...params }, ssim: lastSsim, busy: busyCount > 0 }),
+  getState: () => ({ params: { ...params }, ssim: lastSsim, busy: busyCount > 0 || coalescer.busy }),
   getOutput: () => last,
   getOutputParams: () => lastParams,
   scene,
@@ -188,7 +174,7 @@ function showError(msg: string): void {
 // The first rematch can throw (a fragment value that survives clamping, or a
 // profile that fails hash verification). Surface it visibly, but still flip
 // __ready so the UI boots with defaults instead of a permanently blank page.
-void rematch()
+void coalescer.request(false)
   .catch((e) => { showError(`glyphit3d: initial render failed — ${e instanceof Error ? e.message : String(e)}`); })
   .finally(() => { window.__ready = true; });
 
