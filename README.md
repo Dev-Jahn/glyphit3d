@@ -8,8 +8,9 @@
 That sentence is the **thesis**. What actually ships today is the first two
 clauses, on CPU: a 3D G-buffer bake pipeline and a continuous-coverage two-color
 matcher that already edges [chafa](https://hpjansson.org/chafa/) on the shared
-benchmark. Temporal stability is on the roadmap; the GPU real-time path now ships
-for the Q3 web matcher — see [Status](#status).
+benchmark. Temporal stability is on the roadmap; the **WebGPU Q3 matcher** now ships —
+but the full GPU raster remains a follow-up, so the interactive loop is not yet
+GPU-real-time end to end. See [Status](#status).
 
 ![native 3D render on the left, the same frame rendered entirely in text on the right](docs/assets/hero.png)
 
@@ -169,7 +170,7 @@ Roadmap milestones (full plan in [DESIGN.md §12](DESIGN.md)):
   strictly-fair **+0.0034** and win all six images; the silhouette/orientation and
   contour-DP cross-cell priors were measured and **published as a null** (edgeSSIM
   1/6, 0/6) — DESIGN §4.3 retracted. See [docs/M3-RESULTS.md](docs/M3-RESULTS.md).
-- **GPU real-time — shipped (2026-07).** The CPU matcher was parallelized across a
+- **WebGPU Q3 matcher — shipped (2026-07).** The CPU matcher was parallelized across a
   worker pool, then a **WebGPU compute matcher** landed for the Q3 default web path:
   **byte-exact parity with the CPU closed-form** (glyph 100%, ΔSSIM 0 across the
   parity harness), GPU compute ~1.25ms vs ~118ms pool. The WebGL2 render and the

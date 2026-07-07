@@ -103,23 +103,74 @@ export function decodeProfile(profile: Profile): Atlas {
   };
 }
 
-// Recompute the profileHash the exporter wrote and throw on mismatch. The exporter
-// (scripts/export-atlas.ts atlasToProfile) hashes, in atlas/glyph order, each glyph's
-// cp as UInt32LE followed by its u8 coverage bytes (the same bytes base64'd into
-// alphaB64). Recomputing here over the decoded bytes proves the artifact is intact.
-export async function verifyProfileHash(profile: Profile): Promise<void> {
-  const covers = profile.glyphs.map((g) => decodeAlphaB64(g.alphaB64));
-  const total = covers.reduce((s, c) => s + 4 + c.length, 0);
-  const payload = new Uint8Array(total);
-  const view = new DataView(payload.buffer);
-  let off = 0;
-  for (let i = 0; i < profile.glyphs.length; i++) {
-    view.setUint32(off, profile.glyphs[i]!.cp, true); // little-endian, matches writeUInt32LE
-    off += 4;
-    payload.set(covers[i]!, off);
-    off += covers[i]!.length;
+// ---- Canonical profile hash (ADR-0001, Contract B) --------------------------
+// The profileHash covers the FULL canonical payload — not coverage alone. Scalar
+// stats (sumA/sumAA/gradAA/ink), cell geometry, and font metadata are first-class
+// objective truth that decodeProfile trusts and the matcher consumes, so tampering
+// with ANY of them must invalidate the hash. `buildCanonicalPayload` is the SINGLE
+// byte-layout definition; the exporter (scripts/export-atlas.ts) imports it too so
+// the produce and verify sides are provably byte-identical.
+//
+// Layout (all little-endian). `str s` = u32 utf8-byteLength ++ utf8 bytes;
+// `bytes b` = u32 length ++ raw bytes; floats are Float64 (JSON.stringify emits the
+// shortest decimal that round-trips to the same f64, so JSON.parse restores the
+// exact bits the exporter hashed):
+//   header : u32 version, str font.family, f64 font.size, u32 cellW, u32 cellH,
+//            f64 ascent
+//   glyph  : (in array order) str ch, u32 cp, bytes coverage, f64 sumA, f64 sumAA,
+//            f64 gradAA, f64 ink
+const canonEnc = new TextEncoder();
+
+function u32Bytes(v: number): Uint8Array {
+  const a = new Uint8Array(4);
+  new DataView(a.buffer).setUint32(0, v >>> 0, true);
+  return a;
+}
+function f64Bytes(v: number): Uint8Array {
+  const a = new Uint8Array(8);
+  new DataView(a.buffer).setFloat64(0, v, true);
+  return a;
+}
+
+export function buildCanonicalPayload(profile: Profile): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  const pushStr = (s: string) => {
+    const b = canonEnc.encode(s);
+    chunks.push(u32Bytes(b.length), b);
+  };
+  const pushBytes = (b: Uint8Array) => {
+    chunks.push(u32Bytes(b.length), b);
+  };
+  chunks.push(u32Bytes(profile.version));
+  pushStr(profile.font.family);
+  chunks.push(f64Bytes(profile.font.size));
+  chunks.push(u32Bytes(profile.cellW), u32Bytes(profile.cellH), f64Bytes(profile.ascent));
+  for (const g of profile.glyphs) {
+    pushStr(g.ch);
+    chunks.push(u32Bytes(g.cp));
+    pushBytes(decodeAlphaB64(g.alphaB64));
+    chunks.push(f64Bytes(g.sumA), f64Bytes(g.sumAA), f64Bytes(g.gradAA), f64Bytes(g.ink));
   }
-  const hex = sha256Hex(payload);
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
+// sha256 of the canonical payload — the value the exporter writes to profileHash.
+export function computeProfileHash(profile: Profile): string {
+  return sha256Hex(buildCanonicalPayload(profile));
+}
+
+// Recompute the profileHash the exporter wrote and throw on mismatch. Verified
+// before decode so a tampered/corrupt artifact fails loudly rather than silently
+// feeding bad glyph coverage OR bad scalar stats into the matcher.
+export async function verifyProfileHash(profile: Profile): Promise<void> {
+  const hex = computeProfileHash(profile);
   if (hex !== profile.profileHash) {
     throw new Error(`profile hash mismatch: computed ${hex} != declared ${profile.profileHash}`);
   }

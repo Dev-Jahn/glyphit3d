@@ -21,8 +21,11 @@ function clampf(x: number, lo: number, hi: number): number { return x < lo ? lo 
 
 // One channel's Q3 fit: returns the fitted (F,B) and the selection SSE, matching
 // src/core/match.ts channelSse+channelFB. `Saac`/`STTc` are the centered stats (uploaded,
-// f64-accurate); `SaTc` = Σα(T−mean) is the centered cross-term (the kernel accumulates it
-// directly with Kahan so it never cancels SaT−Sa1·mean in f32); the raw Saa/Sa1/S11/SaT/S1T
+// f64-accurate); `SaTc` = SaT − Sa1·mean is the centered cross-term (the kernel accumulates
+// the raw cross saT = Σα·T via 8-way blocked summation — NOT Kahan, which is silently
+// miscompiled on this Dawn/Tint build — then forms saTc = saT − Sa1·mean; that subtraction is
+// not itself cancellation-free, but the centered/AC-scale SSE formulation above is what avoids
+// the f32 cancellation); the raw Saa/Sa1/S11/SaT/S1T
 // are the stored/raw stats (Saa = STORED sumAA — the objective matchGrid uses).
 export function fitChannelQ3(
   Saa: number, Sa1: number, S11: number, SaT: number, S1T: number,

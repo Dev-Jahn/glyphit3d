@@ -342,10 +342,16 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     const interactive = perf.match + perf.raster;
     assert.ok(interactive < 500, `interactive (match+raster) ${interactive.toFixed(1)}ms >= 500ms`);
 
-    // Worker-execution guard: the heavy match/raster/ssim run off-thread, so the main
-    // thread must keep servicing tasks during a rematch. Beat a setTimeout(0) heartbeat
-    // while a rematch runs and assert it ticked repeatedly with no stall spanning the
-    // whole compute — a main-thread matcher would freeze the loop for the full duration.
+    // Liveness guard. In the GPU path the match runs on the GPU (async — the main thread
+    // stays live during dispatch→readback) and SSIM runs on a worker, but the raster is a
+    // SYNCHRONOUS CPU pass on the MAIN thread (~96ms, pipeline.ts runGpu) tracked as the
+    // remaining interactive bottleneck by perf/gpu-rasterizer. Beat a setTimeout(0)
+    // heartbeat while a rematch runs — it can only tick when the main thread is free, so its
+    // gaps measure main-thread stalls: assert it ticked repeatedly, that the longest stall
+    // does NOT span the whole rematch (a live window remains ⇒ the async GPU-match / worker-
+    // SSIM windows yield, not all-on-main-thread), and that the longest main-thread stall
+    // stays under a loose ceiling (dominated by the CPU raster today; tighten to a frame
+    // budget once perf/gpu-rasterizer moves the raster to the GPU).
     // NOTE: no nested named function — tsx/esbuild's `__name` helper would be undefined
     // in the page. The heartbeat is an anonymous setInterval callback; state lives in an
     // object so the arrow can mutate it without a `const beat = …` binding.
@@ -367,7 +373,15 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
 
     assert.ok(probe.changed, 'liveness rematch did not produce a fresh output');
     assert.ok(probe.ticks >= 3, `main thread starved during rematch: only ${probe.ticks} heartbeat(s) in ${probe.dur.toFixed(0)}ms`);
-    assert.ok(probe.maxGap < probe.dur, `main thread blocked ${probe.maxGap.toFixed(0)}ms of a ${probe.dur.toFixed(0)}ms rematch (≈ whole compute ⇒ ran on main thread)`);
+    // The longest stall must not span the whole rematch: the async GPU-match + worker-SSIM
+    // windows yield the main thread, leaving a live window of `dur - maxGap`. An all-on-main
+    // rematch would be one contiguous block (maxGap ≈ dur ⇒ live window ≈ 0).
+    const liveWindow = probe.dur - probe.maxGap;
+    assert.ok(liveWindow > 20, `main thread never yielded: live window ${liveWindow.toFixed(0)}ms of a ${probe.dur.toFixed(0)}ms rematch (⇒ match/ssim ran on main thread)`);
+    // Metric: longest main-thread stall. Loose ceiling — the ~96ms synchronous CPU raster is
+    // the largest block today. TODO(perf/gpu-rasterizer): once the raster moves to the GPU,
+    // tighten this toward a single frame (~50ms) as a real long-task budget.
+    assert.ok(probe.maxGap < 250, `longest main-thread stall ${probe.maxGap.toFixed(0)}ms over the 250ms ceiling (CPU raster regressed?)`);
 
     return `render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms · ssim ${perf.ssim.toFixed(1)}ms → interactive ${interactive.toFixed(1)}ms; liveness ${probe.ticks} beats, max stall ${probe.maxGap.toFixed(0)}/${probe.dur.toFixed(0)}ms`;
   });

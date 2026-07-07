@@ -142,7 +142,7 @@ fn fitCellGlyph(cell: u32, gi: u32, P: u32) -> GlyphResult {
 // design; it raises occupancy from cells threads to cells·64 and reuses the patch across
 // glyphs. Output is bit-identical to the sequential scan (same per-glyph scores + tie rule).
 const WG : u32 = 64u;
-var<workgroup> sT : array<f32, 768>; // 3·P scratch, P ≤ 256 (these profiles: P = 190)
+var<workgroup> sT : array<f32, 768>; // 3·P scratch; ENFORCED bound 3·P ≤ 768 (P ≤ 256), asserted by gpu-matcher.ts assertPWithinScratch before dispatch — larger P routes to the CPU pool (these profiles: P = 190)
 var<workgroup> rScore : array<f32, 64>;
 var<workgroup> rGi : array<u32, 64>;
 

@@ -40,6 +40,37 @@ export interface GpuMatchResult {
   gatedCount: number;
 }
 
+// matcher-wgsl.ts declares the per-cell workgroup scratch as `array<f32, WG_SCRATCH_F32>`
+// (= 3·256); main() writes sT[idx] for idx < 3·P, so P must satisfy 3·P ≤ WG_SCRATCH_F32
+// (P ≤ 256) or every dispatch OOBs the workgroup array. All bundled DejaVu profiles are
+// P = 190, but DESIGN §5.4 browser TTF profiling yields P = cellW·cellH from an arbitrary
+// font/size, which can exceed 256 — so match() enforces this bound before touching the GPU
+// and throws a catchable error that pipeline.ts routes to the CPU pool.
+export const WG_SCRATCH_F32 = 768;
+
+export function pExceedsScratch(P: number): boolean {
+  return 3 * P > WG_SCRATCH_F32;
+}
+
+export function assertPWithinScratch(P: number): void {
+  if (pExceedsScratch(P)) {
+    throw new Error(`gpu-matcher: P=${P} exceeds workgroup scratch (3P must be <= ${WG_SCRATCH_F32}); use CPU pool`);
+  }
+}
+
+// Cell-buffer reuse decision. targetBuf is sized numCells·3·P·F32, so a change in EITHER
+// numCells or P (a new atlas with the same cols·rows footprint but a larger glyph cell)
+// must recreate the P-sized buffer — reusing a too-small targetBuf drops the writeBuffer
+// (offset+size > buffer.size) and silently produces wrong output. `prev` is null before the
+// first allocation.
+export function needsCellBufferRealloc(
+  prev: { numCells: number; P: number } | null,
+  numCells: number,
+  P: number,
+): boolean {
+  return prev === null || prev.numCells !== numCells || prev.P !== P;
+}
+
 export class GpuMatcher {
   private readonly device: GPUDevice;
   private readonly pipeline: GPUComputePipeline;
@@ -56,8 +87,10 @@ export class GpuMatcher {
   private alphaBuf: GPUBuffer | null = null;
   private gscalBuf: GPUBuffer | null = null;
 
-  // run-scoped (re-created only when the cell count changes).
+  // run-scoped (re-created when the cell count OR the glyph-cell P changes — targetBuf is
+  // sized by both).
   private numCells = 0;
+  private cellP = 0;
   private targetBuf: GPUBuffer | null = null;
   private cstatBuf: GPUBuffer | null = null;
   private outGlyphBuf: GPUBuffer | null = null;
@@ -131,7 +164,8 @@ export class GpuMatcher {
   }
 
   private ensureCellBuffers(numCells: number, P: number): void {
-    if (this.numCells === numCells && this.targetBuf) return;
+    const prev = this.targetBuf ? { numCells: this.numCells, P: this.cellP } : null;
+    if (!needsCellBufferRealloc(prev, numCells, P)) return;
     const dev = this.device;
     for (const b of [this.targetBuf, this.cstatBuf, this.outGlyphBuf, this.outFBBuf, this.stagingGlyph, this.stagingFB]) b?.destroy();
     this.targetBuf = dev.createBuffer({ size: numCells * 3 * P * F32, usage: 0x80 | 0x8 });
@@ -141,6 +175,7 @@ export class GpuMatcher {
     this.stagingGlyph = dev.createBuffer({ size: numCells * 4, usage: 0x1 /* MAP_READ */ | 0x8 });
     this.stagingFB = dev.createBuffer({ size: numCells * 6 * F32, usage: 0x1 | 0x8 });
     this.numCells = numCells;
+    this.cellP = P;
   }
 
   // Run the Q3 match. `lin` is the grid-footprint linear reference (w == cols*cellW,
@@ -149,6 +184,7 @@ export class GpuMatcher {
     if (this.lost) throw new Error('gpu-matcher: device lost');
     const { cellW, cellH } = atlas;
     const P = atlas.P;
+    assertPWithinScratch(P); // P > 256 OOBs the workgroup scratch — throw so pipeline routes this atlas to the CPU pool.
     const G = atlas.glyphs.length;
     const numCells = cols * rows;
     const w = lin.w, h = lin.h;

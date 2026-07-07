@@ -126,6 +126,17 @@ describe('profileHash verification', () => {
     profile.glyphs[0]!.alphaB64 = Buffer.from(bytes).toString('base64');
     await expect(verifyProfileHash(profile)).rejects.toThrow(/hash mismatch/);
   });
+
+  it('rejects a profile whose scalar stats were tampered (ADR-0001 Contract B)', async () => {
+    const atlas = await buildAtlas(FONT, SIZE, 'blocks');
+    const profile = atlasToProfile(atlas, family(), SIZE);
+    // Corrupt a first-class objective scalar but keep the declared profileHash — a
+    // decode that trusts the hash would silently feed a wrong sumAA into the
+    // matcher's argmin/MDL/color-fit. The canonical hash must now catch this.
+    const g = profile.glyphs.find((x) => x.sumAA !== 0)!;
+    g.sumAA += 1;
+    await expect(verifyProfileHash(profile)).rejects.toThrow(/hash mismatch/);
+  });
 });
 
 describe('imageDataToLinear', () => {

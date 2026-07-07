@@ -38,6 +38,15 @@ let lastSsim: number | null = null;
 // Active-run counter, not a boolean: requestRematch holds one extra count across its
 // whole coalescing loop so busy never blips false between iterations. busy = count>0.
 let busyCount = 0;
+// F1 single-flight: monotonic run id. Every rematch() captures one before its first await;
+// a resolved run commits ONLY if it is still the latest (mySeq === rematchSeq), so a slow
+// older run (e.g. a Q3 GPU match) can never overwrite a faster newer one (e.g. a Q1 pool
+// match) that started after it and already committed.
+let rematchSeq = 0;
+// Params snapshot of the run that produced `last` — read by exports so the grid, its
+// colour-channel count (quality) and font hash (charset) always come from ONE run, never a
+// stale grid paired with the current (already-changed) params.
+let lastParams: Pick<Params, 'cols' | 'quality' | 'charset' | 'space'> | null = null;
 
 function profileUrl(charset: Charset): string {
   return new URL(`profiles/dejavu-16-${charset}.json`, document.baseURI).href;
@@ -53,12 +62,19 @@ async function ensureAtlas(charset: Charset): Promise<Atlas> {
 }
 
 async function rematch(interactive = false): Promise<void> {
+  const mySeq = ++rematchSeq;
   busyCount++;
   try {
     const a = await ensureAtlas(params.charset);
     scene.setOrbit(params.yaw, params.pitch);
-    const out = await pipeline.run(scene, a, { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset }, interactive);
+    const runParams = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset };
+    const out = await pipeline.run(scene, a, runParams, interactive);
+    // Stale-run guard (F1): a newer rematch started while this one was awaiting — drop it
+    // whole. No mutation of screen, `last`, #ssim, perf, or the onOutput trigger, so a slow
+    // older run cannot overwrite the current frame/state/exports with mismatched params.
+    if (mySeq !== rematchSeq) return;
     last = out;
+    lastParams = runParams;
     if (out.ssim != null) lastSsim = out.ssim;
 
     rasterCanvas.width = out.raster.w;
@@ -137,6 +153,7 @@ declare global {
       setParams: (p: Partial<Params>) => void;
       getState: () => { params: Params; ssim: number | null; busy: boolean };
       getOutput: () => PipelineOutput | null;
+      getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space'> | null;
       scene: Scene;
     };
     __ready: boolean;
@@ -148,6 +165,7 @@ window.__app = {
   setParams: (p) => { Object.assign(params, p); },
   getState: () => ({ params: { ...params }, ssim: lastSsim, busy: busyCount > 0 }),
   getOutput: () => last,
+  getOutputParams: () => lastParams,
   scene,
 };
 

@@ -21,6 +21,9 @@ export interface AppApi {
   setParams: (p: Partial<Params>) => void;
   getState: () => { params: Params; ssim: number | null; busy: boolean };
   getOutput: () => PipelineOutput | null;
+  // Params snapshot of the run that produced the current getOutput() grid — lets exports
+  // read grid + quality + charset from one consistent run (see main.ts `lastParams`).
+  getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space'> | null;
   scene: unknown;
 }
 

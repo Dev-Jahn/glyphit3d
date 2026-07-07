@@ -1,6 +1,6 @@
 import type { Grid } from '../../../src/core/types.js';
 import { toAnsi } from '../../../src/render/ansi.js';
-import { app, profileMeta, type Charset, type ProfileMeta } from './bridge.js';
+import { app, profileMeta, type ProfileMeta } from './bridge.js';
 import { downloadBlob, el, panel } from './dom.js';
 
 // Exports device (M2-SPEC §3, DESIGN §8). ANSI reuses the existing toAnsi; PNG bakes
@@ -90,10 +90,14 @@ export class Exports {
   }
 
   private async saveJson(): Promise<void> {
-    const charset = app().getState().params.charset as Charset;
-    const quality = app().getState().params.quality;
-    const meta = await profileMeta(charset);
-    const json = serializeGrid(this.grid(), meta, quality);
+    // Read grid + params from ONE committed run: quality (colour channels) and charset
+    // (font hash) must describe the SAME grid, not the current params which may already
+    // point at a newer run still in flight.
+    const grid = this.grid();
+    const op = app().getOutputParams();
+    if (!op) throw new Error('no output yet');
+    const meta = await profileMeta(op.charset);
+    const json = serializeGrid(grid, meta, op.quality);
     downloadBlob(new Blob([JSON.stringify(json)], { type: 'application/json' }), 'glyphit3d.json');
     this.flash('saved glyphit3d.json');
   }

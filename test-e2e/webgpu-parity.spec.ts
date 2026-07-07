@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deflateSync, crc32 } from 'node:zlib';
 import { chromium, type Browser, type Page } from 'playwright';
 import { createServer, type ViteDevServer } from 'vite';
 
@@ -22,9 +23,66 @@ const configFile = resolve(webRoot, 'vite.config.ts');
 const LAUNCH_ARGS = ['--no-sandbox', '--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-angle=vulkan', '--ignore-gpu-blocklist', '--enable-gpu'];
 
 interface Cfg {
-  label: string; source: 'scene' | 'image'; charset: 'ascii' | 'blocks'; cols: number;
+  label: string; source: 'scene' | 'image'; charset: 'ascii' | 'blocks' | 'braille' | 'full'; cols: number;
   space: 'linear' | 'gamma'; yaw?: number; pitch?: number; image?: string;
 }
+
+// chore/parity-adversarial-fixtures (O1). A minimal, dependency-free 8-bit-RGB PNG encoder so
+// the parity sweep can drive CRAFTED targets (not just the demo scene / bench images) straight
+// at the worst-case numeric regimes. PIL and the browser are standard PNG decoders, so a valid
+// encoding decodes byte-identically in-page. Parity is CPU-vs-GPU on the SAME decoded image, so
+// a real f32 divergence on a crafted input surfaces as a non-tie disagreement or a colour Δ.
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body) >>> 0, 0);
+  return Buffer.concat([len, body, crc]);
+}
+function craftPng(w: number, h: number, px: (x: number, y: number) => [number, number, number]): string {
+  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 2; // 8-bit, colour type 2 (RGB); rest (compression/filter/interlace) = 0
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    const rs = y * (1 + w * 3);
+    raw[rs] = 0; // per-scanline filter: none
+    for (let x = 0; x < w; x++) {
+      const [r, g, b] = px(x, y);
+      const o = rs + 1 + x * 3;
+      raw[o] = r & 255; raw[o + 1] = g & 255; raw[o + 2] = b & 255;
+    }
+  }
+  const png = Buffer.concat([sig, pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))]);
+  return `data:image/png;base64,${png.toString('base64')}`;
+}
+
+// Author each crafted target at the EXACT cols=100 grid footprint (gridW=cols·cellW,
+// gridH=round(cols·cellW/cellH)·cellH for the DejaVu-16 10×19 cell) so the in-page
+// drawImage(0,0,gridW,gridH) is an identity blit — no resampling blurs the intra-cell structure.
+const CELLW = 10, CELLH = 19;
+const FW = 100 * CELLW;                                  // 1000
+const FH = Math.max(1, Math.round((100 * CELLW) / CELLH)) * CELLH; // 53·19 = 1007
+
+// (1) washout: a low-contrast field (~16/255 across the frame) with a faint sub-cell dither, so
+// per-cell AC straddles the contrast gate — the invisible-ink / gate-boundary regime.
+const craftWashout = craftPng(FW, FH, (x, y) => {
+  const g = 124 + Math.round(8 * (x / FW + y / FH));
+  const s = ((x / 3 | 0) + (y / 3 | 0)) & 1 ? 2 : -2;
+  return [g + s, g + s, g + s];
+});
+// (2) checker: 4×5 sub-cell squares ⇒ strong INTRA-cell AC (each 10×19 cell holds several
+// squares) at sharp contrast — the box-constrained path plus many genuine glyph near-ties.
+const craftChecker = craftPng(FW, FH, (x, y) => (
+  ((x / 4 | 0) + (y / 5 | 0)) & 1 ? [225, 215, 200] : [30, 35, 60]
+));
+// (3) hi-DC / low-AC: a bright field (~0.9) with a ±3/255 intra-cell dither sitting just past the
+// gate — the S1T²/P cancellation regime the centered kernel exists to defend. Slightly different
+// per channel so the gate sees chroma structure, not luma-only.
+const craftHiDc = craftPng(FW, FH, (x, y) => {
+  const d = ((x / 3 | 0) + (y / 5 | 0)) & 1 ? 3 : -3;
+  return [232 + d, 229 + d, 226 + d];
+});
 
 // SPEC §6 thresholds.
 const GLYPH_AGREE_MIN = 99.5;   // %
@@ -82,7 +140,38 @@ async function main(): Promise<void> {
     { label: 'torus.png', source: 'image', charset: 'ascii', cols: 140, space: 'gamma', image: torus },
     { label: 'DamagedHelmet.png', source: 'image', charset: 'blocks', cols: 100, space: 'gamma', image: helmet },
     { label: 'DamagedHelmet.png', source: 'image', charset: 'ascii', cols: 100, space: 'gamma', image: helmet },
+    { label: 'DamagedHelmet.png', source: 'image', charset: 'blocks', cols: 140, space: 'linear', image: helmet },
     { label: 'washout-stress.png', source: 'image', charset: 'blocks', cols: 100, space: 'gamma', image: washout },
+    { label: 'washout-stress.png', source: 'image', charset: 'ascii', cols: 140, space: 'gamma', image: washout },
+
+    // ── chore/parity-adversarial-fixtures (O1): strengthen the byte-exact claim past the 14-config
+    // sample with crafted whole-scene targets + a G sweep. Same SPEC §6 thresholds; all expected
+    // green by the centered-algebra design. Any FAIL here is a genuine finding to triage, not a
+    // loosened bar (the asserts below are unchanged).
+
+    // Crafted synthetic targets (authored at the cols=100 footprint → identity blit). These hit
+    // the worst-case regimes head-on: gate boundary, box path, and the high-DC/low-AC f32
+    // cancellation regime the kernel centers to survive.
+    { label: 'craft:washout', source: 'image', charset: 'blocks', cols: 100, space: 'gamma', image: craftWashout },
+    { label: 'craft:washout', source: 'image', charset: 'ascii', cols: 100, space: 'gamma', image: craftWashout },
+    { label: 'craft:checker', source: 'image', charset: 'ascii', cols: 100, space: 'gamma', image: craftChecker },
+    { label: 'craft:checker', source: 'image', charset: 'blocks', cols: 100, space: 'linear', image: craftChecker },
+    { label: 'craft:hi-dc', source: 'image', charset: 'blocks', cols: 100, space: 'gamma', image: craftHiDc },
+    { label: 'craft:hi-dc', source: 'image', charset: 'ascii', cols: 100, space: 'linear', image: craftHiDc },
+
+    // G sweep: all bundled DejaVu profiles are P=190 (the P>256 workgroup-scratch guard is
+    // unit-tested in gpu-matcher-pguard.test.ts — no >256 profile ships to drive it end-to-end),
+    // but G spans 94→364. braille (270) and full (364) exercise the longest strided glyph scans,
+    // the argmin tie path, and the workgroup reduction under the most contention.
+    { label: 'scene@30/-15', source: 'scene', charset: 'braille', cols: 100, space: 'gamma' },
+    { label: 'scene@30/-15', source: 'scene', charset: 'full', cols: 100, space: 'gamma' },
+    { label: 'scene@30/-15', source: 'scene', charset: 'full', cols: 140, space: 'gamma' },
+    { label: 'washout-stress.png', source: 'image', charset: 'full', cols: 100, space: 'gamma', image: washout },
+
+    // Crafted scene poses: near-grazing maximizes flat background (gate boundary); a steep pose
+    // redistributes the silhouette AC — both away from the two default poses.
+    { label: 'scene grazing', source: 'scene', charset: 'blocks', cols: 100, space: 'gamma', yaw: 5, pitch: -80 },
+    { label: 'scene steep', source: 'scene', charset: 'ascii', cols: 100, space: 'linear', yaw: 200, pitch: 60 },
   ];
 
   const active = process.env.PARITY_QUICK
