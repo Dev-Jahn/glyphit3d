@@ -91,8 +91,9 @@ tasks:
     anchor: "§5.2"
     origin: "review-2026-07-07-gpu-reality"
   - id: decision/profile-stats-objective-contract
+    ruling: "Contract B — 스칼라 stats(sumA/sumAA/gradAA/ink)를 1급 objective truth로 확정. profileHash를 coverage 단독이 아니라 전체 canonical payload(coverage+스칼라+폰트/셀 메타)로 확장. 근거: 공유 프로파일이 실시간 프로파일과 동일 매칭을 재현해야 함(충실도). ADR-0001. 구현=fix/profile-hash-canonical"
     title: "프로파일 scalar stats(sumA/sumAA/gradAA/ink) objective 계약 확정: hash 대상 truth(Contract B, hash 범위 확대)인가 coverage에서 decode-time 재계산(Contract A, DESIGN §5.4/§5.2)인가 — 현재 B 데이터모델+A hash 범위 혼종이 무결성 공백"
-    status: "pending"
+    status: "done"
     severity: "major"
     anchor: "§5.4"
     origin: "review-2026-07-07-gpu-reality"
@@ -115,4 +116,11 @@ tasks:
     title: "parity harness 적대적 fixture 보강(O1): synthetic high-DC/low-AC 셀, gateTau 경계, exact/near-tie lower-gi 보존 property, P/G sweep — 'byte-exact'를 유한 14-config sweep 너머로 확장"
     status: "pending"
     severity: "minor"
+    origin: "review-2026-07-07-gpu-reality"
+  - id: fix/profile-hash-canonical
+    title: "profileHash를 canonical payload 전체로 확장(Contract B, ADR-0001): verifyProfileHash+exporter가 coverage뿐 아니라 스칼라(sumA/sumAA/gradAA/ink)+폰트/셀 메타까지 해싱; 스칼라 변조 거부 테스트 추가; decodeProfile은 저장 스칼라 신뢰 유지"
+    status: "pending"
+    severity: "major"
+    deps: ["decision/profile-stats-objective-contract"]
+    anchor: "§5.4"
     origin: "review-2026-07-07-gpu-reality"
