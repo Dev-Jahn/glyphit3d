@@ -1,0 +1,15 @@
+version: 1
+project: glyphit3d
+ssot: DESIGN.md
+progress: PROGRESS.md
+adr_dir: docs/adr
+reviews_dir: docs/reviews
+progress_archive_dir: docs/progress
+generated_dir: docs/ssot
+digest_max_lines: 150
+review:
+  mode: packet
+  reviewers: [codex, gemini, gpt-5.5-pro]
+  require_ci: false
+state:
+  last_round_commit: null

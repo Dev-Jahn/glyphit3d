@@ -1,0 +1,73 @@
+# glyphit3d task registry (jahns-workflow). Read/mutate via `jw task`, NOT by editing
+# this file whole (a PreToolUse hook redirects raw reads). IDs are <type>/<kebab-slug>,
+# type ∈ feat|fix|perf|gate|spike|decision|docs|chore. Bare codenames (P0, Q1, …) banned.
+#
+# Required per task: id, title, status (pending|active|done|blocked|dropped).
+# Optional fields:
+#   deps: [ids]          unmet deps → status blocked (list them)
+#   milestone: M4        organizing bucket (defined under milestones:)
+#   round: 2026-07-07-x  the round that touched it
+#   anchor: "DESIGN §6"  the SSOT section this task governs (§-anchor, never a line no.)
+#   severity: blocker|major|minor   (review findings)
+#   origin: "..."        where it came from (review, feedback, spec)
+#   branch: feat/...     working branch
+#   notes: "..."         free text; old codenames go here for traceability (e.g. "was P0")
+#   ruling: "..."        the user's decision on a decision/... task
+#   result: "..."        a recorded measurement/outcome
+#   lane: {branch, base_sha, depends_on}   parallel worktree lane
+version: 1
+project: glyphit3d
+milestones: []
+tasks:
+  - id: chore/adopt-jahns-workflow
+    title: "jahns-workflow 하네스 도입 (SSOT/tasks/packet 리뷰)"
+    status: "done"
+    notes: "ADR-0000"
+    round: "2026-07-07-adopt-harness"
+  - id: docs/metric-redesign
+    title: "재구성 지표 재설계: SSIM 포화 → 셀 스케일 고주파 AC 구조 지표 + 물체 마스크 + 분포(하위 percentile) 보고, SSIM은 가드레일로 강등"
+    status: "pending"
+    anchor: "DESIGN §10"
+    origin: "사용자 피드백 2026-07-06"
+  - id: feat/ascii-identity-selection
+    title: "구조 인지 문자 선택: 균일/밝은 영역엔 면적 큰 문자, 미묘한 gradient엔 조절된 작은 문자"
+    status: "blocked"
+    deps: ["docs/metric-redesign"]
+    anchor: "DESIGN §6"
+    origin: "사용자 피드백 2026-07-06"
+  - id: feat/contrast-floor-fill
+    title: "어두운 영역 검은 구멍 잔여분: fitted-path invisibility(검정 위 dim fg) 대비 하한 제약"
+    status: "pending"
+    anchor: "DESIGN §3"
+    origin: "사용자 피드백 2026-07-06"
+    notes: "Round P가 gate 성분 수정; fitted 성분이 3D 데모 주성분"
+  - id: feat/shape-color-coupling
+    title: "형태-색상 coupling: 셀 사각영역 전체 광량/조도 반영해 문자색 명도·채도 조절"
+    status: "blocked"
+    deps: ["docs/metric-redesign"]
+    anchor: "DESIGN §6"
+    origin: "사용자 피드백 2026-07-06"
+  - id: decision/public-repo-toggle
+    title: "private→public 전환 여부 (전환 시 Pages 웹 데모 자동 배포)"
+    status: "pending"
+    origin: "프로젝트 상태"
+  - id: perf/webgpu-matcher
+    title: "WebGPU WGSL matcher (근본 성능 개선)"
+    status: "pending"
+    anchor: "DESIGN §7"
+    notes: "WebGPU는 이 머신 headless Chromium(secure context)에서 Blackwell GPU로 검증됨 — 이전 blocked 사유(GPU 부재)는 오진; 실사용자 브라우저도 WebGPU 지원. 옛 M2.5"
+  - id: feat/palette-constrained-color
+    title: "palette-256/theme16 제약 색 모드 (디더 배리어·M1 prior 활동 공간)"
+    status: "pending"
+    anchor: "DESIGN §6"
+    notes: "미구현; Round A와 합류 가능"
+  - id: feat/temporal-animation
+    title: "temporal/애니메이션: motion-vector hysteresis, delta frames"
+    status: "pending"
+    anchor: "DESIGN §4"
+    notes: "was M4; §4.3 잔여 가설 마지막 시험대"
+  - id: chore/e2e-gpu-rendering
+    title: "e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변)"
+    status: "pending"
+    anchor: "DESIGN §10"
+    origin: "GPU 오진 정정 2026-07-07"
