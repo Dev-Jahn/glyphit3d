@@ -1,6 +1,6 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { createCanvas, loadImage, type Canvas } from '@napi-rs/canvas';
 import { writeFile } from 'node:fs/promises';
 import type { LinearImage } from '../src/core/types.js';
 import { buildAtlas } from '../src/atlas/atlas.js';
@@ -15,7 +15,7 @@ const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf';
 
 // Render the shaded reference through the Q3 two-color matcher and return an
 // sRGB-encoded canvas of the glyph raster (same footprint as the reference).
-async function glyphCanvas(refPath: string): Promise<ReturnType<typeof createCanvas>> {
+async function glyphCanvas(refPath: string): Promise<Canvas> {
   const atlas = await buildAtlas(FONT, 16, 'blocks');
   const ref: LinearImage = await loadLinear(refPath); // already at grid footprint
   const opts = defaultOptions(3);
