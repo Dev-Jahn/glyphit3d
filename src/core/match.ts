@@ -1,5 +1,5 @@
 import type { LinearImage, Atlas, Grid, GridCell, MatchOptions, FitStatsG, Candidate } from './types.js';
-import { sseAt, fitFree, fitFgOnly, fitBox } from './fit.js';
+import { sseAt, fitFree, fitFgOnly, fitBox, contrastFloorFit } from './fit.js';
 import { cellStats } from './stats.js';
 import { gradients } from '../image/image.js';
 import { linearToSrgb, luma } from './color.js';
@@ -133,6 +133,12 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   // Q1 (mono, fixed colors) is exempt. Emits mirror the gated-cell convention (Q2: mean in fg,
   // bg fixed; Q3/Q4: mean in bg, fg null); B is fbg in Q2 (fixed bg), the fitted bg in Q3/Q4.
   const collapseThreshold = opts.collapseThreshold ?? 0;
+  // Perceptual contrast floor (Round A ASCII-identity, feat/contrast-floor-fill). WORKING-space
+  // luma units; 0 = off = byte-identical. Applied to the fitted TEXT winner only (below), NOT to
+  // gated/family winners; Q1 exempt. See fit.ts contrastFloorFit for the constrained-LS + demote
+  // decision. Opposite remedy to collapseThreshold: it lifts faint dark-region glyphs to legible
+  // contrast (or flat-fills them) instead of removing them.
+  const contrastFloor = opts.contrastFloor ?? 0;
   // Set by emitWinner on each call: true iff the invisibility collapse fired (winner
   // replaced by space + flat mean). Read right after the call to decide whether a topK
   // text candidate list must be overwritten with the collapsed single candidate (§3.4
@@ -604,10 +610,12 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       gStats.Saa = isQ4 ? g.sumAA + lam2 * g.gradAA : g.sumAA;
       const F: [number, number, number] = [0, 0, 0];
       const B: [number, number, number] = [0, 0, 0];
+      const saTc: [number, number, number] = [0, 0, 0]; // plain Σα·T per channel (pre-Q4 aug), for the contrast floor
       for (let c = 0; c < 3; c++) {
         const base = c * P;
         let saT = 0;
         for (let i = 0; i < P; i++) saT += g.alpha[i]! * T[base + i]!;
+        saTc[c] = saT;
         let stt = STT[c]!;
         if (isQ4) {
           let dot = 0;
@@ -643,14 +651,43 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         }
       }
 
-      // winner → emit via the invisibility collapse (emitWinner). B is fbg in Q2 (channelFB
-      // fixes it), the fitted bg in Q3/Q4; collapseThreshold=0 → byte-identical to pre-collapse.
-      cells[cellIdx] = emitWinner(g.ch, F, B, g.sumA);
-      // §3.4 cands fix: when the winner collapses to space, cand[0] (the un-collapsed text
-      // glyph from the topK scan) no longer matches the emit — overwrite with the collapsed
-      // single candidate so contourPostPass cannot resurrect the collapsed glyph. Un-collapsed
-      // text winners keep their full topK list (cand[0] already reproduces the emit).
-      if (cands && lastCollapsed) cands[cellIdx] = singleCand(cells[cellIdx]!, bestGi, bestScore);
+      // Contrast floor (Round A, feat/contrast-floor-fill): before the normal emit, if the fitted
+      // fg/bg luma separation is below the floor, either lift it to the floor along the fit's own
+      // chromatic axis or demote to a solid flat cell (fit.ts contrastFloorFit derives the rule).
+      // Scored on the PLAIN L2 Gram/stats (g.sumAA/saTc) — a perceptual contrast decision, not the
+      // Q4 edge objective (which only picked the glyph). Q1 exempt; families/stylization skip this
+      // (handled above / colors already committed). contrastFloor=0 → this whole block is dead.
+      let floored = false;
+      if (contrastFloor > 0 && quality !== 1 && !styleAlbedo) {
+        const gPlain: FitStatsG = { Saa: g.sumAA, Sa1: g.sumA, S11: P };
+        const fr = contrastFloorFit(gPlain, F, B, ST, STT, saTc, P, contrastFloor, quality === 2);
+        if (fr) {
+          let cell: GridCell;
+          if (fr.space) {
+            cell = quality === 2
+              ? { ch: ' ', fg: encode(fr.mean), bg: encode(fbg) }   // Q2: bg fixed, mean in (invisible) fg
+              : { ch: ' ', fg: null, bg: encode(fr.mean) };          // Q3/Q4: solid bg fill = cell mean
+          } else {
+            cell = quality === 2
+              ? { ch: g.ch, fg: encode(fr.F), bg: encode(fbg) }
+              : { ch: g.ch, fg: encode(fr.F), bg: encode(fr.B) };
+          }
+          cells[cellIdx] = cell;
+          // cand[0] must equal the emit so contourPostPass(kappaC=0) reproduces it byte-for-byte.
+          if (cands) cands[cellIdx] = singleCand(cell, bestGi, bestScore);
+          floored = true;
+        }
+      }
+      if (!floored) {
+        // winner → emit via the invisibility collapse (emitWinner). B is fbg in Q2 (channelFB
+        // fixes it), the fitted bg in Q3/Q4; collapseThreshold=0 → byte-identical to pre-collapse.
+        cells[cellIdx] = emitWinner(g.ch, F, B, g.sumA);
+        // §3.4 cands fix: when the winner collapses to space, cand[0] (the un-collapsed text
+        // glyph from the topK scan) no longer matches the emit — overwrite with the collapsed
+        // single candidate so contourPostPass cannot resurrect the collapsed glyph. Un-collapsed
+        // text winners keep their full topK list (cand[0] already reproduces the emit).
+        if (cands && lastCollapsed) cands[cellIdx] = singleCand(cells[cellIdx]!, bestGi, bestScore);
+      }
     }
   }
 

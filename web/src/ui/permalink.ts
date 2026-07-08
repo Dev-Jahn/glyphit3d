@@ -2,8 +2,8 @@ import { app } from './bridge.js';
 import { el, panel } from './dom.js';
 
 // Permalink device (M2-SPEC §3): settings-only fragment (model, cols, quality,
-// charset, space, camera yaw/pitch), kept live in the URL so a reload restores the
-// view (main.ts reads it on load). Custom dropped models are not encoded.
+// charset, space, camera yaw/pitch, contrast floor), kept live in the URL so a reload
+// restores the view (main.ts reads it on load). Custom dropped models are not encoded.
 
 function fragment(): string {
   const p = app().getState().params;
@@ -15,6 +15,7 @@ function fragment(): string {
     space: p.space,
     yaw: p.yaw.toFixed(1),
     pitch: p.pitch.toFixed(1),
+    floor: p.floor.toFixed(3), // Round A contrast floor; #floor=0 turns it off (main.ts applyFragment)
   });
   return q.toString();
 }

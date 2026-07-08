@@ -26,6 +26,12 @@ export function defaultOptions(quality: 0 | 1 | 2 | 3 | 4): MatchOptions {
     // threshold qualifies → ship OFF. Available opt-in for washout-dominated inputs where the
     // faint glyphs are genuinely structureless (there the cost is ~0.001).
     collapseThreshold: 0,
+    // Perceptual contrast floor (Round A ASCII-identity, feat/contrast-floor-fill). Default OFF
+    // (0) → byte-identical output; this is the SSOT default, so every bench/gate/parity path that
+    // sources defaultOptions() keeps the floor off. A GLOBAL floor hurts reconstruction (DESIGN
+    // §3.4 M3 correction), so a nonzero value is wired only into the web demo dark path (main.ts),
+    // never here. See MatchOptions.contrastFloor (types.ts) for the constrained-LS semantics.
+    contrastFloor: 0,
   };
 }
 

@@ -321,9 +321,11 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
   });
 
   await check(6, 'Permalink round-trip: settings survive reload', async () => {
-    await afterRematch(page, () => page.evaluate(() => { window.__app.setParams({ cols: 140, quality: 1, charset: 'ascii', space: 'linear' }); return window.__app.rematch(); }));
+    // floor 0.1 (≠ the 0.06 default and ≠ off) proves the contrast-floor control round-trips too.
+    await afterRematch(page, () => page.evaluate(() => { window.__app.setParams({ cols: 140, quality: 1, charset: 'ascii', space: 'linear', floor: 0.1 }); return window.__app.rematch(); }));
     const hash = await page.evaluate('location.hash') as string;
     assert.ok(hash.includes('cols=140') && hash.includes('quality=1') && hash.includes('charset=ascii') && hash.includes('space=linear'), `fragment not written by permalink device: ${hash}`);
+    assert.ok(hash.includes('floor=0.100'), `contrast floor not encoded in fragment: ${hash}`);
 
     // True reload round-trip: navigate the same page to the fragment URL so main.ts's
     // applyFragment runs on a fresh load.
@@ -334,7 +336,8 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     assert.equal(p.quality, 1, 'quality not restored');
     assert.equal(p.charset, 'ascii', 'charset not restored');
     assert.equal(p.space, 'linear', 'space not restored');
-    return `fragment ${hash} → reload restored {cols:140, quality:1, charset:ascii, space:linear}`;
+    assert.equal(p.floor, 0.1, 'contrast floor not restored');
+    return `fragment ${hash} → reload restored {cols:140, quality:1, charset:ascii, space:linear, floor:0.1}`;
   });
 
   await check(7, 'Perf at defaults: match+raster < 500ms; main thread stays live during a rematch', async () => {

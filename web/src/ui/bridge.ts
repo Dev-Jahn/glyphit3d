@@ -14,6 +14,7 @@ export interface Params {
   space: 'linear' | 'gamma';
   yaw: number;
   pitch: number;
+  floor: number; // Round A ASCII-identity contrast floor (working-space luma; 0 = off). Default 0.06 (dark-scene demo).
 }
 
 export interface AppApi {
@@ -23,7 +24,7 @@ export interface AppApi {
   getOutput: () => PipelineOutput | null;
   // Params snapshot of the run that produced the current getOutput() grid — lets exports
   // read grid + quality + charset from one consistent run (see main.ts `lastParams`).
-  getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space'> | null;
+  getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space' | 'floor'> | null;
   scene: unknown;
 }
 

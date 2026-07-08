@@ -15,11 +15,21 @@ interface Params {
   space: 'linear' | 'gamma';
   yaw: number;
   pitch: number;
+  floor: number;
 }
 
 // Defaults (M2-SPEC §2). Fragment settings (written by the UI permalink) override
 // on load — §3 "applied on load".
-const params: Params = { cols: 100, quality: 3, charset: 'blocks', space: 'gamma', yaw: 30, pitch: -15 };
+// `floor` = Round A ASCII-identity contrast floor (feat/contrast-floor-fill). The demo scene is a
+// model on a near-black background, the exact "black holes" regime, so the dark path ships a
+// MEASURED default of 0.06 (working-space luma; ≈15/255): it drops DamagedHelmet's invisible-
+// over-black cells 642→0 while lifting the rest to a legible contrast. It is an aesthetic
+// constraint that trades reconstruction (chafa-gate mean −0.0033 post-gamut-fix — ours 0.9802 vs
+// 0.9835 off, gate PASS→FAIL; repro: npx tsx bench/chafa-gate.ts --floor 0.06) for legibility, so
+// it stays OFF in every bench/gate (defaultOptions keeps 0) and is applied here only. BOTH matchers
+// apply it — the WebGPU Q3 matcher as a host per-cell post-pass, the CPU pool inside matchGrid — so
+// the floored default path still reports matcher 'gpu'. #floor=0 in the permalink turns it off.
+const params: Params = { cols: 100, quality: 3, charset: 'blocks', space: 'gamma', yaw: 30, pitch: -15, floor: 0.06 };
 applyFragment(params);
 
 const sceneCanvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -48,7 +58,7 @@ let rematchSeq = 0;
 // Params snapshot of the run that produced `last` — read by exports so the grid, its
 // colour-channel count (quality) and font hash (charset) always come from ONE run, never a
 // stale grid paired with the current (already-changed) params.
-let lastParams: Pick<Params, 'cols' | 'quality' | 'charset' | 'space'> | null = null;
+let lastParams: Pick<Params, 'cols' | 'quality' | 'charset' | 'space' | 'floor'> | null = null;
 
 function profileUrl(charset: Charset): string {
   return new URL(`profiles/dejavu-16-${charset}.json`, document.baseURI).href;
@@ -69,14 +79,17 @@ async function rematch(interactive = false): Promise<void> {
   try {
     const a = await ensureAtlas(params.charset);
     scene.setOrbit(params.yaw, params.pitch);
-    const runParams = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset };
+    const runParams = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset, contrastFloor: params.floor };
+    // Output-snapshot for exports/getOutputParams (F1: captured BEFORE the await, so it pairs the
+    // committed grid with the params that produced it, never the current — possibly changed — ones).
+    const snapshot = { cols: params.cols, quality: params.quality, charset: params.charset, space: params.space, floor: params.floor };
     const out = await pipeline.run(scene, a, runParams, interactive);
     // Stale-run guard (F1): a newer rematch started while this one was awaiting — drop it
     // whole. No mutation of screen, `last`, #ssim, perf, or the onOutput trigger, so a slow
     // older run cannot overwrite the current frame/state/exports with mismatched params.
     if (mySeq !== rematchSeq) return;
     last = out;
-    lastParams = runParams;
+    lastParams = snapshot;
     if (out.ssim != null) lastSsim = out.ssim;
 
     rasterCanvas.width = out.raster.w;
@@ -137,7 +150,7 @@ declare global {
       setParams: (p: Partial<Params>) => void;
       getState: () => { params: Params; ssim: number | null; busy: boolean };
       getOutput: () => PipelineOutput | null;
-      getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space'> | null;
+      getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space' | 'floor'> | null;
       scene: Scene;
     };
     __ready: boolean;
@@ -208,4 +221,8 @@ function applyFragment(p: Params): void {
   if (cs === 'ascii' || cs === 'blocks' || cs === 'braille' || cs === 'full') p.charset = cs;
   const sp = q.get('space');
   if (sp === 'linear' || sp === 'gamma') p.space = sp;
+  // Round A contrast floor (working-space luma units). A finite value in [0, 0.5] applies;
+  // #floor=0 disables the dark-path default. Out-of-range/garbage keeps the measured default.
+  const floor = n('floor');
+  if (floor !== undefined) p.floor = clamp(floor, 0, 0.5);
 }

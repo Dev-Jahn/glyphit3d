@@ -22,6 +22,7 @@ export interface MatchBandRequest {
   type: 'matchBand'; id: number; band: number; charset: string;
   img: { w: number; h: number; data: Float32Array }; // band pixel slice, w × (bandRows·cellH)
   cols: number; quality: 0 | 1 | 2 | 3 | 4; space: 'linear' | 'gamma';
+  contrastFloor?: number; // Round A ASCII-identity: per-cell, banding-safe (see below). 0/absent = off.
 }
 export interface SsimRequest {
   type: 'ssim'; id: number;
@@ -77,6 +78,9 @@ ctx.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
     const opts = defaultOptions(msg.quality);
     opts.space = msg.space;
+    // Round A contrast floor (feat/contrast-floor-fill): per-cell (uses only that cell's stats,
+    // like the gate/collapse), so it is exact per band — no cross-cell coupling to guard against.
+    if (msg.contrastFloor) opts.contrastFloor = msg.contrastFloor;
     // P2 banding assumption, kept VISIBLE: families/contour/topK/orientation are cross-cell
     // passes that break per-band independence — never silently single-thread them. Q4's edge
     // loss is ALSO cross-cell: matchGrid reads the full-image vertical gradient (dyT/gradTT

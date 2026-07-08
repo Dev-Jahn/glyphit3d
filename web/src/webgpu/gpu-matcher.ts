@@ -1,5 +1,6 @@
 import type { Atlas, GridCell, LinearImage } from '../../../src/core/types.js';
 import { linearToSrgb } from '../../../src/core/color.js';
+import { applyContrastFloor } from './contrast-floor-post.js';
 import { MATCHER_WGSL } from './matcher-wgsl.js';
 
 // WebGPU compute matcher for the Q3 default web path (perf/webgpu-matcher, SPEC §1–§5).
@@ -29,6 +30,8 @@ export interface GpuMatchOpts {
   space: 'linear' | 'gamma';
   gateTau: number;
   mdlLambda: number;
+  contrastFloor?: number;        // Round A ASCII-identity floor (0/absent = off). Applied as a host
+                                 // per-cell post-pass on the GPU winner grid (contrast-floor-post.ts).
 }
 
 export interface GpuMatchResult {
@@ -349,6 +352,14 @@ export class GpuMatcher {
         bg: [encode(fbOut[b + 3]!), encode(fbOut[b + 4]!), encode(fbOut[b + 5]!)],
       };
     }
+
+    // Contrast-floor post-pass (feat/contrast-floor-fill, MAJOR fix): apply the SAME per-cell
+    // floor the CPU path applies, host-side on the GPU winner grid, so the floored default demo
+    // path KEEPS the GPU matcher (no CPU-pool detour). Re-derives the winner-glyph sums from the
+    // working-space targetHost (byte-identical to the CPU fit's T) → byte-identical to matchGrid's
+    // floored emit on every cell it touches. No-op when opts.contrastFloor is 0/absent (the parity
+    // path), so the CPU-vs-GPU parity contract is untouched.
+    applyContrastFloor(cells, glyphOut, gated, targetHost, atlas, cols, rows, opts.space, opts.contrastFloor ?? 0);
 
     return { cells, matchMs, gpuMs, readbackMs, prepMs, gatedCount };
   }

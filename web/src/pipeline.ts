@@ -30,6 +30,7 @@ export interface PipelineParams {
   quality: 0 | 1 | 2 | 3 | 4;
   space: 'linear' | 'gamma';
   charset: string;
+  contrastFloor?: number; // Round A ASCII-identity dark-path floor (0/absent = off). Threaded to BOTH paths: the GPU matcher applies it as a host per-cell post-pass, the CPU pool inside matchGrid.
 }
 
 export interface Timings { resample: number; match: number; raster: number; ssim: number }
@@ -118,6 +119,9 @@ export class Pipeline {
     // Route: Q3 default web path on a WebGPU-capable secure context → GPU matcher (a
     // capability boundary, not a masking fallback). Q0/Q1/Q2 and any WebGPU-absent context
     // → CPU pool. A mid-session GPU failure (device lost) falls back to the pool for that run.
+    // The contrast floor is NOT a routing condition: the GPU matcher applies it as a host
+    // per-cell post-pass (gpu-matcher.ts → contrast-floor-post.ts), byte-identical to the CPU
+    // floored path, so the floored default demo path stays on the GPU matcher.
     const gpu = await this.gpuReady;
     if (gpu && gpu.available && params.quality === 3) {
       try {
@@ -140,7 +144,7 @@ export class Pipeline {
     const w = lin.w, h = lin.h;
     const res = await gpu.match(
       lin, atlas,
-      { quality: 3, space: params.space, gateTau: this.q3opts.gateTau, mdlLambda: this.q3opts.mdlLambda },
+      { quality: 3, space: params.space, gateTau: this.q3opts.gateTau, mdlLambda: this.q3opts.mdlLambda, contrastFloor: params.contrastFloor },
       params.cols, rows,
     );
     // resample = main-thread prep (linearize + working-space transform + per-cell stats +
@@ -199,6 +203,7 @@ export class Pipeline {
       const req: MatchBandRequest = {
         type: 'matchBand', id, band: b, charset: params.charset,
         img: { w, h: br * cellH, data: slice }, cols: params.cols, quality: params.quality, space: params.space,
+        contrastFloor: params.contrastFloor,
       };
       layout.push({ r0, rows: br });
       bandReqs.push(this.request<BandResult>(this.workers[b]!, req, [slice.buffer])); // … then transfer

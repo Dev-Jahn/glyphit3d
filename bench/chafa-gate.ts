@@ -332,6 +332,7 @@ async function main(): Promise<void> {
       families: { type: 'boolean', default: false },
       strict: { type: 'boolean', default: false }, // §6 strictly-fair families subset (atlas + braille only)
       collapse: { type: 'string' },
+      floor: { type: 'string' },
     },
   });
   if (values.images) IMAGES = values.images.split(',').map((s) => s.trim()).filter(Boolean);
@@ -377,6 +378,7 @@ async function main(): Promise<void> {
   if (values['gate-tau'] !== undefined) opts.gateTau = parseFloat(values['gate-tau']);
   if (values['edge-lambda'] !== undefined) opts.edgeLambda = parseFloat(values['edge-lambda']);
   if (values.collapse !== undefined) opts.collapseThreshold = parseFloat(values.collapse); // post-selection invisibility collapse (0 = off = default)
+  if (values.floor !== undefined) opts.contrastFloor = parseFloat(values.floor); // Round A contrast floor (0 = off = default; measurement flag, hurts reconstruction)
   await singleRun(atlas, symbols, opts);
 }
 

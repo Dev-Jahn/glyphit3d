@@ -64,6 +64,20 @@ export interface MatchOptions {
   // the low-energy washout regime; this exact rule has full leverage there.
   collapseThreshold?: number;
 
+  // Perceptual contrast floor (Round A ASCII-identity, feat/contrast-floor-fill). WORKING-space
+  // luma units; default 0 = OFF = byte-identical output. In the fitted (non-gated) TEXT path,
+  // when the winner's fg/bg luma separation ΔL=|luma(F−B)| falls below `contrastFloor`, the fit
+  // is re-solved as a constrained LS: the fg/bg separation is pinned to ΔL=floor along the fit's
+  // own chromatic axis and the DC term is re-solved (contrast lifted, cell mean preserved). If
+  // that constrained residual exceeds a flat solid cell's, the glyph is demoted to space + bg
+  // fill instead (fit.ts contrastFloorFit derives the rule). This is the OPPOSITE remedy to
+  // collapseThreshold (which demotes faint glyphs); it makes dark-region glyphs legible rather
+  // than removing them. A GLOBAL floor is known-harmful to reconstruction (DESIGN §3.4 M3
+  // correction: faint |F−B|<24 glyphs encode real sub-cell gradients), so this is an explicit
+  // aesthetic opt-in — keep 0 in every reconstruction bench/gate. Q1 (mono, fixed colors) exempt;
+  // not applied to family/gated winners.
+  contrastFloor?: number;
+
   // M1 AOV score-priors (all optional, all default off → M0 behavior unchanged; M1-SPEC §3).
   aov?: {
     shadingLuma?: Float32Array;  // gridW*gridH, WORKING-space luma of the albedo-free shading render (§4.1)
