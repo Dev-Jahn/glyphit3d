@@ -132,6 +132,13 @@ function f64Bytes(v: number): Uint8Array {
   return a;
 }
 
+// CONTRACT-BEARING — see docs/PROFILE-PAYLOAD-CONTRACT.md. This function IS the profile's
+// identity: `profileHash` is sha256 over the bytes it emits, and `verifyProfileHash` re-runs
+// it on load. The seal is byte-level, so any external profile generator (DESIGN §5.4's
+// "generate profile from my TTF" tool) must either import THIS function, or bump
+// `Profile.version` if it re-implements the layout — an independent byte layout under the
+// same version silently breaks every consumer's hash check. Do not change the layout without
+// a version bump.
 export function buildCanonicalPayload(profile: Profile): Uint8Array {
   const chunks: Uint8Array[] = [];
   const pushStr = (s: string) => {

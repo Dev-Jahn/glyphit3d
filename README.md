@@ -181,6 +181,9 @@ Unit tests: `npx vitest run` (126 passing). E2E: `npm run e2e` (9/9).
 
 The founding design document is [DESIGN.md](DESIGN.md) — including the honest
 prior-art table and the forbidden-claims list that constrains all copy here.
+The profile payload written by `web/src/profile.ts` is a byte-level external
+contract for third-party font-profile generators — see
+[docs/PROFILE-PAYLOAD-CONTRACT.md](docs/PROFILE-PAYLOAD-CONTRACT.md).
 설계 문서는 한국어로 작성되어 있습니다 (the design doc is written in Korean).
 
 ## License
