@@ -3,6 +3,7 @@ import { Pipeline, type PipelineOutput } from './pipeline.js';
 import { loadProfile } from './profile.js';
 import { renderPerf } from './perf.js';
 import { createCoalescer } from './coalescer.js';
+import { resolveRunContext } from './run-snapshot.js';
 import type { Atlas } from '../../src/core/types.js';
 import './ui/index.js';
 
@@ -77,13 +78,23 @@ async function rematch(interactive = false): Promise<void> {
   const mySeq = ++rematchSeq;
   busyCount++;
   try {
-    const a = await ensureAtlas(params.charset);
-    scene.setOrbit(params.yaw, params.pitch);
-    const runParams = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset, contrastFloor: params.floor };
-    // Output-snapshot for exports/getOutputParams (F1: captured BEFORE the await, so it pairs the
-    // committed grid with the params that produced it, never the current — possibly changed — ones).
-    const snapshot = { cols: params.cols, quality: params.quality, charset: params.charset, space: params.space, floor: params.floor };
-    const out = await pipeline.run(scene, a, runParams, interactive);
+    // fix/torn-runparams-snapshot: snapshot the live params ONCE, before any await, so the atlas,
+    // the run params, and the pose all come from ONE coherent read. Re-reading params after the
+    // `await` in resolveRunContext (which can span a profile fetch on a charset change) would let
+    // a mid-run params mutation (setParams / orbit / drag-drop) pair an OLD-charset atlas with NEW
+    // run params in a single commit. resolveRunContext derives both the atlas and runParams from
+    // this snapshot, so they cannot tear; if params changed mid-run the coalescer's dirty-drain
+    // re-runs with a fresh snapshot and the seq guard below drops this now-stale commit. `floor`
+    // rides the SAME snapshot so the contrast floor can never tear from the grid it produced.
+    const snap = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset, yaw: params.yaw, pitch: params.pitch, floor: params.floor };
+    const { atlas: a, runParams } = await resolveRunContext(snap, ensureAtlas);
+    scene.setOrbit(snap.yaw, snap.pitch);
+    // Output-snapshot for exports/getOutputParams (F1: from the SAME pre-await snapshot, so it pairs
+    // the committed grid with the params that produced it, never the current — possibly changed — ones).
+    const snapshot = { cols: snap.cols, quality: snap.quality, charset: snap.charset, space: snap.space, floor: snap.floor };
+    // The contrast floor rides the run params to BOTH pipeline paths (GPU host post-pass / CPU pool),
+    // threaded from the same snapshot as everything else.
+    const out = await pipeline.run(scene, a, { ...runParams, contrastFloor: snap.floor }, interactive);
     // Stale-run guard (F1): a newer rematch started while this one was awaiting — drop it
     // whole. No mutation of screen, `last`, #ssim, perf, or the onOutput trigger, so a slow
     // older run cannot overwrite the current frame/state/exports with mismatched params.
