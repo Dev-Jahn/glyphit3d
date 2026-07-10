@@ -107,4 +107,24 @@ export interface MatchOptions {
   // clean hook point for selection priors in the constrained activity space — none implemented).
   palette?: 'theme16' | 'palette256';
   paletteRefineK?: number; // palette256 refine width k (≥1); default 8 (options.ts).
+
+  // feat/ascii-identity-selection (spec §3) — structure-aware glyph selection prior. 0 = off =
+  // byte-identical output (SSOT default in options.ts). Requires quality 2 (fixed-bg fg fit) and
+  // throws otherwise (no fallback), throws with families in v1 (the penalty is not yet forwarded
+  // into solveFamily, which would rig the meta-selection), and throws when L_F−L_B < 0.5 working
+  // luma (ρ* degenerates). Adds λ_id·u·D·P·(ρ_g−ρ*)² to the Q2 selection score in BOTH the full
+  // scan and the gated flat path, pulling glyph ink coverage ρ_g toward the appearance model's own
+  // luminance ramp ρ*=(Ȳ−L_B)/(L_F−L_B) on uniform cells (u≈1) and reverting to LS shape matching
+  // on structured cells (u→0). O(1) per glyph on top of the existing dot product (core/identity.ts).
+  identityLambda?: number;   // λ_id ≥ 0, preset 5
+  identityTau?: number;      // τ_id > 0, uniformity knee (working per-pixel-channel AC energy), default 2.5e-4 (read only when identityLambda>0)
+
+  // feat/shape-color-coupling (spec §4) — absent = off = byte-identical. Requires quality 2; throws
+  // otherwise and throws with styleAlbedoColors (two competing color-rewrite passes). Rescales the
+  // fitted fg by a hue-preserving luma gain k so the emitted cell DC-luma tracks the cell mean Ȳ
+  // (coupled with the glyph's ink coverage ρ̄), then desaturates dim cells (luma-invariant, so the
+  // DC guarantee survives). Applied per Q2 cell AFTER the fg fit and BEFORE the contrast floor
+  // (spec §4.3 order: prior→fit→coupling→floor→collapse), to fitted-text winners, gated Q2 emits
+  // and — for the cand[0]==emit invariant — every topK candidate (core/coupling.ts).
+  coupling?: { strength?: number; satKnee?: number; satMin?: number; kMin?: number; kMax?: number };
 }

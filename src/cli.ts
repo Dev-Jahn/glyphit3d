@@ -46,6 +46,14 @@ async function bakeCmd(): Promise<void> {
       'contour-kappa': { type: 'string', default: '0.15' },
       palette: { type: 'string' },
       'palette-k': { type: 'string' },
+      identity: { type: 'boolean', default: false },
+      'identity-lambda': { type: 'string' },
+      'identity-tau': { type: 'string' },
+      'couple-strength': { type: 'string' },
+      'sat-knee': { type: 'string' },
+      'sat-min': { type: 'string' },
+      'k-max': { type: 'string' },
+      floor: { type: 'string' },
       o: { type: 'string' },
       html: { type: 'string' },
       png: { type: 'string' },
@@ -55,11 +63,11 @@ async function bakeCmd(): Promise<void> {
   });
   const target = positionals[0];
   if (!target) {
-    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const cols = parseInt(values.cols!, 10);
-  const quality = parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4;
+  const quality = identityQuality(values.identity!, parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4);
   const space = values.space === 'linear' ? 'linear' : 'gamma';
   const charset = values.charset as keyof typeof CHARSETS;
   const fontSize = parseInt(values['font-size']!, 10);
@@ -96,6 +104,7 @@ async function bakeCmd(): Promise<void> {
   const opts = defaultOptions(quality);
   opts.space = space;
   applyPalette(opts, values.palette, values['palette-k']);
+  applyIdentity(opts, values);
   const eta = parseFloat(values.split!);
   const kappa = parseFloat(values.antibleed!);
   const styleAlbedo = values['style-albedo']!;
@@ -178,7 +187,14 @@ function lumaField01(ref: { w: number; h: number; data: Float32Array }): Float32
 // Map the --palette flag (theme16|16 / palette256|256) onto MatchOptions. Palette modes are
 // CPU-only, Q3/Q4 (DESIGN §6); matchGrid enforces the quality/feature constraints.
 function applyPalette(opts: MatchOptions, palette: string | undefined, k: string | undefined): void {
-  if (!palette) return;
+  if (!palette) {
+    // --palette-k without --palette is a silent no-op; reject loudly (matches the k-range guard below).
+    if (k !== undefined) { console.error('--palette-k requires --palette'); process.exit(2); }
+    return;
+  }
+  // Palette modes are Q3/Q4 (fg-bg) only (DESIGN §6). matchGrid enforces this, but Q0 (rampGrid)
+  // never reaches matchGrid and would SILENTLY drop --palette — so reject any quality < 3 here.
+  if (opts.quality < 3) { console.error('--palette requires --quality 3 or 4 (fg-bg)'); process.exit(2); }
   const p = palette === 'theme16' || palette === '16' ? 'theme16'
     : palette === 'palette256' || palette === '256' ? 'palette256'
       : undefined;
@@ -189,6 +205,50 @@ function applyPalette(opts: MatchOptions, palette: string | undefined, k: string
     if (!Number.isFinite(kn) || kn < 1) { console.error('--palette-k must be an integer >= 1'); process.exit(2); }
     opts.paletteRefineK = kn;
   }
+}
+
+// ASCII-identity mode (spec §5). --identity is the fixed-bg Q2 aesthetic family (selection prior +
+// shape-color coupling + contrast floor), so it IMPLIES --quality 2. An EXPLICIT --quality other
+// than 2 is a hard error (no silent override). Returns the quality matchGrid will run at.
+function identityQuality(identity: boolean, quality: 0 | 1 | 2 | 3 | 4): 0 | 1 | 2 | 3 | 4 {
+  if (!identity) return quality;
+  const qExplicit = argv.some((a) => a === '--quality' || a.startsWith('--quality='));
+  if (qExplicit && quality !== 2) { console.error('--identity requires --quality 2 (fixed-bg fg fit)'); process.exit(2); }
+  return 2;
+}
+
+// Apply the --identity preset (spec §5) + override flags onto MatchOptions. The preset turns on all
+// three members of the aesthetic family: the selection prior (λ=5, τ=2.5e-4), shape-color coupling
+// (defaults) and the contrast floor (24/255≈0.0941 working luma — the u8-24 visibility threshold).
+// Override flags refine individual knobs; any override without --identity is rejected loudly.
+function applyIdentity(opts: MatchOptions, values: Record<string, string | boolean | undefined>): void {
+  const num = (k: string): number | undefined => {
+    const v = values[k];
+    if (v === undefined) return undefined;
+    const n = parseFloat(v as string);
+    if (!Number.isFinite(n)) { console.error(`--${k} must be a number`); process.exit(2); }
+    return n;
+  };
+  const overrideKeys = ['identity-lambda', 'identity-tau', 'couple-strength', 'sat-knee', 'sat-min', 'k-max', 'floor'];
+  const anyOverride = overrideKeys.some((k) => values[k] !== undefined);
+  if (!values.identity) {
+    if (anyOverride) { console.error('--identity-* / --couple-strength / --sat-knee / --sat-min / --k-max / --floor require --identity'); process.exit(2); }
+    return;
+  }
+  // preset
+  opts.identityLambda = 5;
+  opts.identityTau = 2.5e-4;
+  opts.contrastFloor = 24 / 255;
+  const coupling: NonNullable<MatchOptions['coupling']> = {};
+  // overrides (diagnostic sweeps, spec §6.4 — acceptance is judged on the defaults only)
+  const lam = num('identity-lambda'); if (lam !== undefined) { if (lam < 0) { console.error('--identity-lambda must be >= 0'); process.exit(2); } opts.identityLambda = lam; }
+  const tau = num('identity-tau'); if (tau !== undefined) { if (tau <= 0) { console.error('--identity-tau must be > 0'); process.exit(2); } opts.identityTau = tau; }
+  const floor = num('floor'); if (floor !== undefined) { if (floor < 0) { console.error('--floor must be >= 0'); process.exit(2); } opts.contrastFloor = floor; }
+  const cs = num('couple-strength'); if (cs !== undefined) coupling.strength = cs;
+  const sk = num('sat-knee'); if (sk !== undefined) coupling.satKnee = sk;
+  const sm = num('sat-min'); if (sm !== undefined) coupling.satMin = sm;
+  const km = num('k-max'); if (km !== undefined) coupling.kMax = km;
+  opts.coupling = coupling;
 }
 
 async function main(): Promise<void> {
@@ -207,6 +267,14 @@ async function main(): Promise<void> {
       'contour-kappa': { type: 'string', default: '0.15' },
       palette: { type: 'string' },
       'palette-k': { type: 'string' },
+      identity: { type: 'boolean', default: false },
+      'identity-lambda': { type: 'string' },
+      'identity-tau': { type: 'string' },
+      'couple-strength': { type: 'string' },
+      'sat-knee': { type: 'string' },
+      'sat-min': { type: 'string' },
+      'k-max': { type: 'string' },
+      floor: { type: 'string' },
       o: { type: 'string' },
       html: { type: 'string' },
       png: { type: 'string' },
@@ -216,12 +284,12 @@ async function main(): Promise<void> {
   });
 
   if (positionals[0] !== 'image' || !positionals[1]) {
-    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const input = positionals[1];
   const cols = parseInt(values.cols!, 10);
-  const quality = parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4;
+  const quality = identityQuality(values.identity!, parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4);
   const space = values.space === 'gamma' ? 'gamma' : 'linear';
   const charset = values.charset as keyof typeof CHARSETS;
   const fontSize = parseInt(values['font-size']!, 10);
@@ -235,6 +303,7 @@ async function main(): Promise<void> {
   const opts = defaultOptions(quality);
   opts.space = space;
   applyPalette(opts, values.palette, values['palette-k']);
+  applyIdentity(opts, values);
   // M3 §3.3/§3.4: orientation prior + contour post-pass. 2D image mode has no AOVs, so
   // both fall back to the reference luma (orientation via the luma edge field internally,
   // contour via a per-cell luma silhouette proxy). Q0 (ramp) has no per-cell candidates.

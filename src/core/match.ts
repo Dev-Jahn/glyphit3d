@@ -9,6 +9,8 @@ import { glyphOrientations, orientationBonus, borderProfiles, structureTensor } 
 import type { Orientation } from '../atlas/orientation.js';
 import { extractPolylines, viterbiContour } from './contour.js';
 import { buildPalette, bestPair, paletteSrgb } from './palette.js';
+import { precomputeIdentity, rhoStar, uWeight } from './identity.js';
+import { coupleFg, resolveCoupling } from './coupling.js';
 
 function clamp01(x: number): number { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
@@ -96,6 +98,48 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   const ffg = toWork(opts.fixedFg);
   const fbg = toWork(opts.fixedBg);
 
+  // ASCII-identity aesthetic mode (spec §3/§4): structure-aware selection prior + shape-color
+  // coupling, layered on the fixed-bg Q2 machinery. Both default OFF → the guarded blocks below
+  // never execute and output stays byte-identical (V1). L_B/L_F are the fixed bg/fg working luma;
+  // ρ* and the coupling gain are derived for general (L_B,L_F) but validated only for bright-fg-on-
+  // dark-bg (L_F−L_B ≥ 0.5) this round. All guards fail fast (no fallback, spec §3.4/§4.2).
+  const identityLambda = opts.identityLambda ?? 0;
+  const identityTau = opts.identityTau ?? 2.5e-4;
+  const couplingParams = opts.coupling ? resolveCoupling(opts.coupling) : null;
+  const LB = luma(fbg[0], fbg[1], fbg[2]);
+  const LF = luma(ffg[0], ffg[1], ffg[2]);
+  if (identityLambda > 0) {
+    if (quality !== 2) throw new Error('identity selection prior (identityLambda>0) requires quality 2 (fixed-bg fg fit)');
+    if ((opts.families?.length ?? 0) > 0) throw new Error('identity selection prior is not supported with families in v1 (penalty not forwarded into solveFamily)');
+    if (LF - LB < 0.5) throw new Error('identity selection prior requires L_F − L_B ≥ 0.5 working luma (bright-fg-on-dark-bg; ρ* degenerates otherwise)');
+  }
+  if (couplingParams) {
+    if (quality !== 2) throw new Error('shape-color coupling requires quality 2 (fixed-bg fg fit)');
+    if (opts.styleAlbedoColors) throw new Error('shape-color coupling is incompatible with styleAlbedoColors (two competing color-rewrite passes)');
+    // Families are emitted via emitWinner (§2b/3a) which applies NO coupling, so a family winner
+    // would ship uncoupled fg while text/gated winners ship coupled fg — two inconsistent color
+    // pipelines in one grid. Fail fast (spec §4.3: this state is unreachable/thrown), mirroring the
+    // identity-prior families guard above; coupling is not forwarded into solveFamily in v1.
+    if ((opts.families?.length ?? 0) > 0) throw new Error('shape-color coupling is not supported with families in v1 (coupling not forwarded into the family emit)');
+  }
+  // Per-atlas ink coverage ρ_g = sumA/P (spec §3.1), precomputed once. Only when the prior is on.
+  const idRho = identityLambda > 0 ? precomputeIdentity(atlas).rho : null;
+  // Coupling illumination source (spec §4.1): the albedo-free shading-luma AOV cell mean drives the
+  // true 광량/조도 saturation transfer; absent → the 2D fallback ℓ = Ȳ is used per cell.
+  const couplingShading = couplingParams ? opts.aov?.shadingLuma : undefined;
+  if (couplingShading && couplingShading.length !== img.w * img.h) throw new Error('aov.shadingLuma must be gridW*gridH');
+  // Cell illumination ℓ (spec §4.1): mean shadingLuma over the cell (true illumination, bake path)
+  // when the AOV is present, else the 2D fallback Ȳ. O(P), only on the winning/gated emit path.
+  const cellIllum = (x0: number, y0: number, Ybar: number): number => {
+    if (!couplingShading) return Ybar;
+    let s = 0;
+    for (let ly = 0; ly < cellH; ly++) {
+      const gy = y0 + ly;
+      for (let lx = 0; lx < cellW; lx++) s += couplingShading[gy * img.w + (x0 + lx)]!;
+    }
+    return s / P;
+  };
+
   // Palette-constrained color (DESIGN §6, core/palette.ts). Built in the WORKING space so the
   // fit/scoring/nearest-neighbor distances pair with the fit space (gamma default). The truecolor
   // path is completely untouched when opts.palette is absent (pal === null → every guarded block
@@ -133,8 +177,10 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   // Q1 (mono, fixed colors) is exempt. Emits mirror the gated-cell convention (Q2: mean in fg,
   // bg fixed; Q3/Q4: mean in bg, fg null); B is fbg in Q2 (fixed bg), the fitted bg in Q3/Q4.
   const collapseThreshold = opts.collapseThreshold ?? 0;
-  // Perceptual contrast floor (Round A ASCII-identity, feat/contrast-floor-fill). WORKING-space
-  // luma units; 0 = off = byte-identical. Applied to the fitted TEXT winner only (below), NOT to
+  // Perceptual contrast floor (Round A ASCII-identity, feat/contrast-floor-fill). DISPLAY-space
+  // (sRGB) luma units — space-invariant: contrastFloorFit rescales it into the working space per
+  // cell (gamma → identity, bit-identical). 0 = off = byte-identical. Applied to the fitted TEXT
+  // winner only (below), NOT to
   // gated/family winners; Q1 exempt. See fit.ts contrastFloorFit for the constrained-LS + demote
   // decision. Opposite remedy to collapseThreshold: it lifts faint dark-region glyphs to legible
   // contrast (or flat-fills them) instead of removing them.
@@ -313,6 +359,18 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         // still ≪ the full scan. Q3+ (bg free) is unchanged: its flat fill IS the cell mean.
         let gatedGi = 0;
         if (quality === 1 || quality === 2) {
+          // Identity prior on the gated flat scan (spec §3.3): the gate's argmin-flat glyph for a
+          // bright uniform cell is U+2588 full block — the pixel-fill anti-pattern. Adding the SAME
+          // λ·u·D·P·(ρ_g−ρ*)² penalty (u≈1 here, D from the flat mean) makes the primary target —
+          // uniform bright regions — pick ramp glyphs instead. identityLambda>0 ⇒ quality===2 (guard).
+          let gW = 0, gRs = 0;
+          if (identityLambda > 0) {
+            const YbarG = luma(mean[0], mean[1], mean[2]);
+            const sG = eacScale / (3 * P);
+            const DG = (mean[0] - fbg[0]) * (mean[0] - fbg[0]) + (mean[1] - fbg[1]) * (mean[1] - fbg[1]) + (mean[2] - fbg[2]) * (mean[2] - fbg[2]);
+            gRs = rhoStar(YbarG, LB, LF);
+            gW = identityLambda * uWeight(sG, identityTau) * DG * P;
+          }
           let bestScore = Infinity;
           for (let gi = 0; gi < G; gi++) {
             const g = glyphs[gi]!;
@@ -322,6 +380,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
               const m = mean[c]!;
               sc += channelSse(gStats, m * g.sumA, P * m, P * m * m, quality, m, m, ffg[c]!, fbg[c]!);
             }
+            if (gW !== 0) { const d = idRho![gi]! - gRs; sc += gW * d * d; }
             if (sc < bestScore) { bestScore = sc; gatedGi = gi; }
           }
           const g = glyphs[gatedGi]!;
@@ -335,6 +394,13 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
             for (let c = 0; c < 3; c++) {
               const m = mean[c]!;
               fg[c] = channelFB(gStats, m * g.sumA, P * m, P * m * m, quality, m, m, ffg[c]!, fbg[c]!)[0];
+            }
+            // Shape-color coupling on the gated Q2 emit (spec §4.3: gated Q2 emits are IN scope —
+            // uniform bright regions are the primary target). The gated glyph's own ρ̄ drives k.
+            if (couplingParams) {
+              const YbarC = luma(mean[0], mean[1], mean[2]);
+              const cf = coupleFg([fg[0], fg[1], fg[2]], g.sumA / P, YbarC, LB, cellIllum(x0, y0, YbarC), couplingParams);
+              fg[0] = cf[0]; fg[1] = cf[1]; fg[2] = cf[2];
             }
             cells[cellIdx] = { ch: g.ch, fg: encode(fg), bg: encode(fbg) };
           }
@@ -447,6 +513,20 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         } else oriBoundary = ef.anisotropy >= 0.5;
       }
 
+      // Identity selection prior per-cell prefactor (spec §3.1): W = λ·u·D·P and the ramp target
+      // ρ*, both O(1) from the per-cell stats (m_c=ST_c/P, s=eacScale/3P, D=Σ(m_c−fbg_c)²). Added
+      // to every glyph's score in the scan below and folded into the topK heap so cand[0]==winner.
+      // identityLambda=0 → idOn false → the scan is byte-identical (V1).
+      let idW = 0, idRs = 0;
+      const idOn = identityLambda > 0;
+      if (idOn) {
+        const mr = ST[0]! / P, mg = ST[1]! / P, mb = ST[2]! / P;
+        const s = eacScale / (3 * P);
+        const D = (mr - fbg[0]) * (mr - fbg[0]) + (mg - fbg[1]) * (mg - fbg[1]) + (mb - fbg[2]) * (mb - fbg[2]);
+        idRs = rhoStar(luma(mr, mg, mb), LB, LF);
+        idW = identityLambda * uWeight(s, identityTau) * D * P;
+      }
+
       // 2. scan all glyphs
       if (cands) heapN = 0;
       let bestScore = Infinity;
@@ -498,6 +578,8 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
           score += channelSse(gStats, saT, ST[c]!, stt, quality, minT[c]!, maxT[c]!, ffg[c]!, fbg[c]!);
         }
         score += opts.mdlLambda * g.ink * eacScale;
+        // Identity selection prior (spec §3.1): pull ρ_g toward the ramp ρ*, weighted by u·D·P.
+        if (idOn) { const d = idRho![gi]! - idRs; score += idW * d * d; }
         // §4.1: extra shading-luma channel, own closed-form (a,b), SSE weighted by η.
         // Fitted colors are discarded — only its SSE enters the selection score.
         if (Lpatch) {
@@ -542,6 +624,9 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       if (cands) {
         const order = Array.from({ length: heapN }, (_, i) => i).sort((a, b) => heapScore![a]! - heapScore![b]!);
         const list: Candidate[] = new Array(heapN);
+        // Coupling cell constants (spec §4.3): the SAME Ȳ/ℓ for every candidate; ρ̄ differs per glyph.
+        const YbarC = couplingParams ? luma(ST[0]! / P, ST[1]! / P, ST[2]! / P) : 0;
+        const ellC = couplingParams ? cellIllum(x0, y0, YbarC) : 0;
         for (let r = 0; r < heapN; r++) {
           const gi = heapIdx![order[r]!]!;
           const gg = glyphs[gi]!;
@@ -560,6 +645,12 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
             }
             const fb = channelFB(gStats, saT, ST[c]!, stt, quality, minT[c]!, maxT[c]!, ffg[c]!, fbg[c]!);
             cF[c] = fb[0]; cB[c] = fb[1];
+          }
+          // §4.3 cand[0]==emit invariant: apply the SAME coupling per candidate (each with its own
+          // glyph's ρ̄) BEFORE encoding — else contourPostPass would resurrect uncoupled colors. Q2.
+          if (couplingParams) {
+            const cf = coupleFg([cF[0], cF[1], cF[2]], gg.sumA / P, YbarC, LB, ellC, couplingParams);
+            cF[0] = cf[0]; cF[1] = cf[1]; cF[2] = cf[2];
           }
           const fgEnc = quality === 1 ? encode(ffg) : encode(cF);
           const bgEnc = quality >= 3 ? encode(cB) : encode(fbg);
@@ -651,6 +742,16 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         }
       }
 
+      // Shape-color coupling (spec §4.3): applied to the fitted fg AFTER the fg fit and BEFORE the
+      // contrast floor — the floor is the family's legibility guarantor and must see the colors that
+      // will actually be emitted. Q2 only (guard); coupling∧styleAlbedo is thrown, so styleAlbedo is
+      // off here. Mutates F in place so the floor, emitWinner and singleCand all see the coupled fg.
+      if (couplingParams) {
+        const YbarC = luma(ST[0]! / P, ST[1]! / P, ST[2]! / P);
+        const cf = coupleFg([F[0], F[1], F[2]], g.sumA / P, YbarC, LB, cellIllum(x0, y0, YbarC), couplingParams);
+        F[0] = cf[0]; F[1] = cf[1]; F[2] = cf[2];
+      }
+
       // Contrast floor (Round A, feat/contrast-floor-fill): before the normal emit, if the fitted
       // fg/bg luma separation is below the floor, either lift it to the floor along the fit's own
       // chromatic axis or demote to a solid flat cell (fit.ts contrastFloorFit derives the rule).
@@ -660,7 +761,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       let floored = false;
       if (contrastFloor > 0 && quality !== 1 && !styleAlbedo) {
         const gPlain: FitStatsG = { Saa: g.sumAA, Sa1: g.sumA, S11: P };
-        const fr = contrastFloorFit(gPlain, F, B, ST, STT, saTc, P, contrastFloor, quality === 2);
+        const fr = contrastFloorFit(gPlain, F, B, ST, STT, saTc, P, contrastFloor, quality === 2, space);
         if (fr) {
           let cell: GridCell;
           if (fr.space) {

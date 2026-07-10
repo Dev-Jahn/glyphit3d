@@ -32,6 +32,11 @@ export function defaultOptions(quality: 0 | 1 | 2 | 3 | 4): MatchOptions {
     // §3.4 M3 correction), so a nonzero value is wired only into the web demo dark path (main.ts),
     // never here. See MatchOptions.contrastFloor (types.ts) for the constrained-LS semantics.
     contrastFloor: 0,
+    // feat/ascii-identity-selection (spec §3). Default OFF (0) → byte-identical output; this is the
+    // SSOT default, so every bench/gate/parity path that sources defaultOptions() keeps the identity
+    // prior off. The identity preset (--identity, cli.ts) sets 5; the shape-color coupling object
+    // stays absent by default (off). See MatchOptions.identityLambda / coupling (types.ts).
+    identityLambda: 0,
   };
 }
 
