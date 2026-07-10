@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { FitStatsG } from '../../../src/core/types.js';
 import { fitFree, fitBox } from '../../../src/core/fit.js';
-import { fitChannelQ3 } from './wgsl-mirror.js';
+import { fitChannelQ3, selectWithHysteresis } from './wgsl-mirror.js';
 
 // The WGSL matcher (matcher-wgsl.ts) reproduces matchGrid's Q3 channelSse/channelFB objective
 // (which uses the atlas's STORED sumAA) via a centered/deviation reformulation that survives
@@ -310,5 +310,101 @@ describe('adversarial fixtures: first-wins-on-tie (lowest gi survives an exact s
     expect(argminFirstWins([base, base, base - Number.EPSILON * base, base])).toBe(2);
     // add that ULP back ⇒ a genuine tie ⇒ the lowest gi wins.
     expect(argminFirstWins([base, base, base, base])).toBe(0);
+  });
+});
+
+// ─── feat/temporal-animation: glyph-hysteresis select (matcher-wgsl.ts §4.1) vs fit.ts oracle ───
+// selectWithHysteresis is the JS mirror of the TEMPORAL_MATCHER_WGSL thread-0 hysteresis decision.
+// The suite pins it to a CPU oracle built INDEPENDENTLY from src/core/fit.ts (fitFree/fitBox via
+// refSse) — NOT a copy of the kernel — proving the whole per-cell select (argmin g* + §4.1 δ·E_AC
+// retain rule) reproduces the fit.ts objective. Two score sets are built per cell: the fit.ts
+// oracle and the centered mirror (fitChannelQ3); the SAME select rule must pick the SAME glyph on
+// both, for a δ sweep including δ=0 (strict short-circuit) and crafted exact ties.
+describe('glyph hysteresis select (temporal §4.1) == fit.ts oracle over 40k cells', () => {
+  // One physically-consistent glyph: α ∈ [0,1] coverage, plus a random ink ∈ [0,1] for the MDL term.
+  function makeGlyph(rng: () => number): { alpha: number[]; sumA: number; sumAA: number; ink: number } {
+    const alpha = new Array<number>(P);
+    let sumA = 0, sumAA = 0;
+    for (let i = 0; i < P; i++) { const a = rng(); alpha[i] = a; sumA += a; sumAA += a * a; }
+    return { alpha, sumA, sumAA, ink: rng() };
+  }
+  // One cell channel: T_i = base + slope·(i/P) + noise (a structured ramp so free/box both fire).
+  function makeChannel(rng: () => number): { T: number[]; ST: number; STT: number; min: number; max: number; STTc: number } {
+    const base = rng() * 0.5, slope = rng() * 1.5 - 0.75, noise = rng() * 0.1;
+    const T = new Array<number>(P);
+    let ST = 0, STT = 0, mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < P; i++) {
+      const t = base + slope * (i / P) + noise * (rng() - 0.5);
+      T[i] = t; ST += t; STT += t * t; if (t < mn) mn = t; if (t > mx) mx = t;
+    }
+    return { T, ST, STT, min: mn, max: mx, STTc: STT - (ST * ST) / P };
+  }
+  const MDL = 0.02; // options.ts mdlLambda
+
+  it('argmin + δ·E_AC retain agrees with the fit.ts oracle (near-tie disagreements < 1e-9 only)', () => {
+    const rng = makeRng(0x7E33A1);
+    const G = 6;
+    let cases = 0, hardDisagree = 0, retainExercised = 0, replaceExercised = 0, shortCircuitChecked = 0;
+    for (let t = 0; t < 40000; t++) {
+      const chans = [makeChannel(rng), makeChannel(rng), makeChannel(rng)];
+      const eac = chans[0]!.STTc + chans[1]!.STTc + chans[2]!.STTc;
+      const oracleScores: number[] = [], mirrorScores: number[] = [];
+      for (let gi = 0; gi < G; gi++) {
+        const gl = makeGlyph(rng);
+        const g: FitStatsG = { Saa: gl.sumAA, Sa1: gl.sumA, S11: P };
+        const Saac = gl.sumAA - (gl.sumA * gl.sumA) / P;
+        let oScore = 0, mScore = 0;
+        for (let c = 0; c < 3; c++) {
+          const ch = chans[c]!;
+          let saT = 0; for (let i = 0; i < P; i++) saT += gl.alpha[i]! * ch.T[i]!;
+          oScore += refSse(g, saT, ch.ST, ch.STT, ch.min, ch.max);
+          const SaTc = saT - g.Sa1 * (ch.ST / P);
+          mScore += fitChannelQ3(g.Saa, g.Sa1, P, saT, ch.ST, SaTc, Saac, ch.STTc, ch.min, ch.max).sse;
+        }
+        const mdl = MDL * gl.ink * eac;
+        oracleScores.push(oScore + mdl); mirrorScores.push(mScore + mdl);
+      }
+      const prevGi = Math.floor(rng() * G);
+      for (const delta of [0, 1e-4, 2.5e-4, 1e-3, 0.02, 0.1]) {
+        cases++;
+        const so = selectWithHysteresis(oracleScores, prevGi, delta, eac);
+        const sm = selectWithHysteresis(mirrorScores, prevGi, delta, eac);
+        if (delta === 0) { shortCircuitChecked++; } // pure argmin path (no retain)
+        if (sm !== so) {
+          // Allowed ONLY when the two choices are an oracle near-tie (< 1e-9) — the argmin/retain
+          // boundary flipped on sub-1e-9 float noise, exactly the parity-harness near-tie carve-out.
+          const gap = Math.abs(oracleScores[sm]! - oracleScores[so]!);
+          if (gap > 1e-9 * (1 + Math.abs(oracleScores[so]!))) hardDisagree++;
+        }
+        // Bookkeeping: did the retain branch actually fire (sticky), and did replace fire?
+        if (delta > 0) {
+          const best = Math.min(...oracleScores);
+          const margin = oracleScores[prevGi]! - best;
+          if (margin < delta * eac && so === prevGi) retainExercised++;
+          if (margin >= delta * eac && so !== prevGi) replaceExercised++;
+        }
+      }
+    }
+    expect(hardDisagree).toBe(0);
+    expect(cases).toBeGreaterThan(200000);
+    expect(shortCircuitChecked).toBeGreaterThan(0);
+    expect(retainExercised).toBeGreaterThan(0);  // hysteresis genuinely held near-ties
+    expect(replaceExercised).toBeGreaterThan(0); // and decisive winners genuinely replaced
+  });
+
+  it('δ=0 short-circuit: an exact tie is NEVER hijacked by the predecessor (byte-identity lemma)', () => {
+    // prevGi in the tied set, another tied glyph at a LOWER index. At δ=0 the winner is the lowest
+    // tied gi (first-wins), regardless of prevGi — the property the ε=0/δ=0 invariant relies on.
+    const tied = 3.0;
+    expect(selectWithHysteresis([tied, tied, tied], 2, 0, 5)).toBe(0);
+    expect(selectWithHysteresis([tied, tied, tied], 1, 0, 5)).toBe(0);
+    // A tiny δ>0 with the predecessor at a tied (margin=0) glyph RETAINS it (0 < δ·eac) — sticky.
+    expect(selectWithHysteresis([tied, tied, tied], 2, 1e-6, 5)).toBe(2);
+    expect(selectWithHysteresis([tied, tied, tied], 1, 1e-6, 5)).toBe(1);
+    // eac=0 (flat cell) collapses the margin threshold to 0: margin 0 < 0 is false ⇒ replace to g*.
+    expect(selectWithHysteresis([tied, tied, tied], 2, 1e-6, 0)).toBe(0);
+    // Decisive margin ⇒ replace even with a huge δ is NOT triggered (retain), small δ ⇒ replace.
+    expect(selectWithHysteresis([1.0, 5.0, 5.0], 1, 0.02, 10)).toBe(0);   // prev(=5) loses by 4 ≥ 0.2 ⇒ replace
+    expect(selectWithHysteresis([1.0, 1.05, 5.0], 1, 0.02, 10)).toBe(1);  // prev loses by .05 < 0.2 ⇒ retain
   });
 });

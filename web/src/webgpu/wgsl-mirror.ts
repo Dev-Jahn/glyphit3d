@@ -79,3 +79,24 @@ export function fitChannelQ3(
   }
   return { F: bF, B: bB, sse: bSse };
 }
+
+// JS mirror of TEMPORAL_MATCHER_WGSL's thread-0 glyph-hysteresis select (matcher-wgsl.ts §4.1,
+// feat/temporal-animation). Given a cell's per-glyph selection scores (index = glyph index; lower =
+// better residual, the SAME quantity src/core/match.ts argmins), it (1) picks the fresh winner g*
+// with the kernel's exact rule — strict `<`, ascending gi, so an EXACT score tie keeps the lowest
+// gi (first-wins) — then (2) RETAINS the predecessor glyph prevGi iff hysteresis holds: hystDelta>0
+// AND the fresh winner does not beat the retained glyph by a decisive margin δ·eac, i.e.
+// scores[prevGi] − scores[g*] < hystDelta·eac. The δ>0 guard is STRICT: at hystDelta<=0 the branch
+// is fully short-circuited (returns g*), which is why an ε=0/δ=0 delta frame is byte-identical to a
+// full rematch (an exact tie at δ=0 resolves to g* via first-wins, never hijacked by prevGi). `eac`
+// is the cell's E_AC (cstat.st.w) — all Q3 score differences are O(E_AC), so the margin scales with
+// it. This is the precise rule the GPU applies; the fuzz suite pins it to an independent fit.ts
+// oracle. Replace uses `>=` (retained−best >= δ·eac ⇒ replace) to match the harness δ-margin
+// oracle's `margin >= delta` boundary; here that is `< δ·eac ⇒ retain`.
+export function selectWithHysteresis(scores: number[], prevGi: number, hystDelta: number, eac: number): number {
+  let bestGi = 0, best = Infinity;
+  for (let gi = 0; gi < scores.length; gi++) if (scores[gi]! < best) { best = scores[gi]!; bestGi = gi; }
+  if (hystDelta <= 0) return bestGi;
+  const retained = scores[prevGi]!;
+  return (retained - best) < hystDelta * eac ? prevGi : bestGi;
+}

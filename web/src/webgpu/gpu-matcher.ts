@@ -1,7 +1,7 @@
 import type { Atlas, GridCell, LinearImage } from '../../../src/core/types.js';
 import { linearToSrgb } from '../../../src/core/color.js';
 import { applyContrastFloor } from './contrast-floor-post.js';
-import { MATCHER_WGSL } from './matcher-wgsl.js';
+import { MATCHER_WGSL, TEMPORAL_MATCHER_WGSL } from './matcher-wgsl.js';
 import { scanCells } from './prep.js';
 import type { Prepped } from './prep.js';
 
@@ -76,6 +76,76 @@ export function needsCellBufferRealloc(
   return prev === null || prev.numCells !== numCells || prev.P !== P;
 }
 
+// ── Temporal delta-frame change detector (feat/temporal-animation, DESIGN §4.9 §3.1) ───────────
+// Pure, host-side, unit-tested (temporal-detect.test.ts). Per cell it compares the CURRENT
+// working-space patch T_t[cell] against the stored REFERENCE patch T_ref[cell] — the patch from
+// that cell's LAST RECOMPUTE, NOT the previous frame — with an early exit on the first
+// channel-pixel whose absolute difference exceeds epsilon. `base`/`len` slice the cell's 3·P run
+// out of the cell-major targetHost layout ([cell*3P + c*P + i]).
+//
+// Reference-frame (not previous-frame) semantics are MANDATORY (§3.1 drift rule): a skipped cell
+// keeps its old reference, so a slow sub-epsilon drift accumulates in |T_t − T_ref| and eventually
+// crosses epsilon and forces a recompute. Previous-frame semantics would compare against the last
+// (near-identical) frame and never trigger — unbounded drift, silently stale output. At epsilon=0
+// the test is strict bit-inequality: a bit-identical patch is unchanged (⇒ its emit is reproducible
+// byte-for-byte, the §3.2 exactness lemma), any other value is changed.
+export function cellChanged(curr: Float32Array, ref: Float32Array, base: number, len: number, epsilon: number): boolean {
+  for (let j = 0; j < len; j++) {
+    const d = curr[base + j]! - ref[base + j]!;
+    if ((d < 0 ? -d : d) > epsilon) return true;
+  }
+  return false;
+}
+
+// Coalesce a strictly-ascending list of changed cell indices into maximal consecutive runs
+// [start,end] (inclusive), so the changed-cell GPU upload is a few long ranged writeBuffer calls
+// (changed cells cluster around the moving object → long runs) instead of one-per-cell. Pure.
+export function coalesceRuns(sortedIdx: ArrayLike<number>): Array<[number, number]> {
+  const runs: Array<[number, number]> = [];
+  const n = sortedIdx.length;
+  if (n === 0) return runs;
+  let start = sortedIdx[0]!, prev = start;
+  for (let i = 1; i < n; i++) {
+    const c = sortedIdx[i]!;
+    if (c === prev + 1) { prev = c; continue; }
+    runs.push([start, prev]);
+    start = c; prev = c;
+  }
+  runs.push([start, prev]);
+  return runs;
+}
+
+// Temporal-state reset signature (feat/temporal-animation §4.4 keyframe matrix). ANY change here
+// forces a full recompute + a fresh reference — pairing a stale reference with new geometry/params
+// would silently corrupt output (§10 reset-matrix risk). Beyond the geometry axes (atlas identity,
+// cols/rows, P) and the fit params the score depends on (space, gateTau, mdlLambda), the CONTRAST
+// FLOOR is included deliberately: the floor post-pass runs on a delta-skipped cell's RETAINED
+// colours, which is consistent only while the floor value is fixed — so a floor change is a
+// keyframe-forcing param change (§ contrast-floor interaction). Atlas is compared by identity
+// (the harness caches one Atlas object per charset, so a charset flip is a new object).
+export interface TemporalSig {
+  atlas: unknown; space: string; cols: number; rows: number; P: number;
+  gateTau: number; mdlLambda: number; contrastFloor: number;
+}
+export function sigChanged(prev: TemporalSig | null, next: TemporalSig): boolean {
+  return prev === null
+    || prev.atlas !== next.atlas || prev.space !== next.space
+    || prev.cols !== next.cols || prev.rows !== next.rows || prev.P !== next.P
+    || prev.gateTau !== next.gateTau || prev.mdlLambda !== next.mdlLambda
+    || prev.contrastFloor !== next.contrastFloor;
+}
+
+// Per-cell result of the temporal compacted dispatch (matchPreppedTemporal). Full-length arrays
+// (numCells); only the changed cells the caller dispatched carry valid data.
+export interface TemporalMatchResult {
+  glyphChosen: Uint32Array; // per cell: the emitted glyph (argmin, or the sticky predecessor)
+  glyphBest: Uint32Array;   // per cell: the fresh argmin winner g* (for the hysteresis oracle's bestCh)
+  fb: Float32Array;         // cells*6: the CHOSEN glyph's fitted F/B (working space)
+  bestScore: Float32Array;  // per cell: RAW residual of g* (caller normalizes by E_AC)
+  retainedScore: Float32Array; // per cell: RAW residual of the predecessor glyph rescored on T_t
+  matchMs: number;
+}
+
 export class GpuMatcher {
   private readonly device: GPUDevice;
   private readonly pipeline: GPUComputePipeline;
@@ -103,6 +173,21 @@ export class GpuMatcher {
   private stagingGlyph: GPUBuffer | null = null;
   private stagingFB: GPUBuffer | null = null;
   private paramsBuf: GPUBuffer;
+
+  // temporal-scoped (feat/temporal-animation): a SECOND pipeline (TEMPORAL_MATCHER_WGSL) + its own
+  // output/dispatch buffers, created lazily so the parity-frozen full path is untouched. targetBuf /
+  // cstatBuf / alphaBuf / gscalBuf are SHARED with the full path (the compacted kernel only reads the
+  // changed cells it was handed, so the shared scratch needs no cross-frame persistence).
+  private tPipeline: GPUComputePipeline | null = null;
+  private tParamsBuf: GPUBuffer | null = null;
+  private tNumCells = 0;
+  private tOutGlyphPair: GPUBuffer | null = null;   // cells*2 u32: [chosenGi, bestGi]
+  private tOutFB: GPUBuffer | null = null;          // cells*6 f32
+  private tOutScore: GPUBuffer | null = null;       // cells*2 f32: [best, retained]
+  private tDispatchInfo: GPUBuffer | null = null;   // cells*2 u32: [cell, prevGi]
+  private tStageGlyph: GPUBuffer | null = null;
+  private tStageFB: GPUBuffer | null = null;
+  private tStageScore: GPUBuffer | null = null;
 
   // reused CPU scratch (avoid per-run reallocation of the big host arrays).
   private work: Float32Array | null = null;   // working-space image (w*h*3)
@@ -341,5 +426,153 @@ export class GpuMatcher {
 
     const res = await this.matchPrepped(prepped, atlas, opts, cols, rows);
     return { ...res, prepMs: res.prepMs + cpuPrepMs };
+  }
+
+  // ── Temporal path (feat/temporal-animation, DESIGN §4.9) ─────────────────────────────────────
+  // Build the working-space image + per-cell prep (targetHost/cstatHost/gated) exactly as match()
+  // does, but WITHOUT dispatching — the temporal runner needs the current stats in hand to run the
+  // change detector before deciding which cells to recompute. Byte-identical prep to match()/
+  // matchGrid (same scanCells, same reused scratch), so a full recompute over this Prepped is
+  // byte-identical to a full match() on the same frame.
+  prepFromLinear(lin: LinearImage, atlas: Atlas, opts: GpuMatchOpts, cols: number, rows: number): Prepped {
+    const { cellW, cellH } = atlas;
+    const P = atlas.P;
+    assertPWithinScratch(P);
+    const w = lin.w, h = lin.h;
+    if (w !== cols * cellW || h !== rows * cellH) throw new Error('gpu-matcher: image does not match grid footprint');
+    const gamma = opts.space === 'gamma';
+    const n3 = w * h * 3;
+    if (!this.work || this.work.length !== n3) { this.work = new Float32Array(n3); }
+    const work = this.work;
+    if (gamma) { for (let i = 0; i < n3; i++) work[i] = linearToSrgb(lin.data[i]!) / 255; }
+    else { work.set(lin.data); }
+    const prepped = scanCells(
+      work, w,
+      { cols, rows, cellW, cellH, P, space: opts.space, gateTau: opts.gateTau },
+      { targetHost: this.targetHost ?? undefined, cstatHost: this.cstatHost ?? undefined },
+    );
+    this.targetHost = prepped.targetHost;
+    this.cstatHost = prepped.cstatHost;
+    return prepped;
+  }
+
+  private ensureTemporalPipeline(): void {
+    if (this.tPipeline) return;
+    const dev = this.device;
+    const module = dev.createShaderModule({ code: TEMPORAL_MATCHER_WGSL });
+    this.tPipeline = dev.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+    this.tParamsBuf = dev.createBuffer({ size: 32, usage: 0x40 /* UNIFORM */ | 0x8 /* COPY_DST */ });
+  }
+
+  private ensureTemporalBuffers(numCells: number): void {
+    if (this.tOutGlyphPair && this.tNumCells === numCells) return;
+    const dev = this.device;
+    for (const b of [this.tOutGlyphPair, this.tOutFB, this.tOutScore, this.tDispatchInfo, this.tStageGlyph, this.tStageFB, this.tStageScore]) b?.destroy();
+    this.tOutGlyphPair = dev.createBuffer({ size: numCells * 2 * 4, usage: 0x80 | 0x4 /* STORAGE|COPY_SRC */ });
+    this.tOutFB = dev.createBuffer({ size: numCells * 6 * F32, usage: 0x80 | 0x4 });
+    this.tOutScore = dev.createBuffer({ size: numCells * 2 * F32, usage: 0x80 | 0x4 });
+    this.tDispatchInfo = dev.createBuffer({ size: numCells * 2 * 4, usage: 0x80 | 0x8 /* STORAGE|COPY_DST */ });
+    this.tStageGlyph = dev.createBuffer({ size: numCells * 2 * 4, usage: 0x1 /* MAP_READ */ | 0x8 });
+    this.tStageFB = dev.createBuffer({ size: numCells * 6 * F32, usage: 0x1 | 0x8 });
+    this.tStageScore = dev.createBuffer({ size: numCells * 2 * F32, usage: 0x1 | 0x8 });
+    this.tNumCells = numCells;
+  }
+
+  // Compacted temporal dispatch: upload ONLY the changed cells' stats (coalesced ranged writes),
+  // dispatch numChanged workgroups through the changedCells indirection, apply §4.1 hysteresis on
+  // the GPU (hystDelta>0), read back the winners/colours/scores. `changedCells` MUST be strictly
+  // ascending (assembler iterates cells in order); `prevGi[k]` is the reprojected-predecessor glyph
+  // index of changedCells[k]. Returns full-length arrays (numCells) — only the changed cells carry
+  // valid data; the caller assembles unchanged cells from its retained reference.
+  async matchPreppedTemporal(
+    prepped: Prepped, atlas: Atlas, opts: GpuMatchOpts, cols: number, rows: number,
+    changedCells: Uint32Array, prevGi: Uint32Array, hystDelta: number,
+  ): Promise<TemporalMatchResult> {
+    if (this.lost) throw new Error('gpu-matcher: device lost');
+    const P = atlas.P;
+    assertPWithinScratch(P);
+    const G = atlas.glyphs.length;
+    const numCells = cols * rows;
+    const numChanged = changedCells.length;
+    const { targetHost, cstatHost } = prepped;
+    if (targetHost.length !== numCells * 3 * P) throw new Error('gpu-matcher: targetHost length != numCells·3·P');
+    if (cstatHost.length !== numCells * 16) throw new Error('gpu-matcher: cstatHost length != numCells·16');
+    if (prevGi.length !== numChanged) throw new Error('gpu-matcher: prevGi length != numChanged');
+
+    this.ensureAtlas(atlas);
+    this.ensureCellBuffers(numCells, P);
+    this.ensureTemporalPipeline();
+    this.ensureTemporalBuffers(numCells);
+    const dev = this.device;
+
+    // Ranged upload: coalesce consecutive changed cells → few long writeBuffer runs (§3.3).
+    const runs = coalesceRuns(changedCells);
+    for (const [a, b] of runs) {
+      const nCells = b - a + 1;
+      dev.queue.writeBuffer(this.targetBuf, a * 3 * P * F32, targetHost, a * 3 * P, nCells * 3 * P);
+      dev.queue.writeBuffer(this.cstatBuf, a * 16 * F32, cstatHost, a * 16, nCells * 16);
+    }
+    // dispatchInfo: [cell, prevGi] per changed cell (compacted by workgroup index).
+    const dinfo = new Uint32Array(numChanged * 2);
+    for (let k = 0; k < numChanged; k++) { dinfo[k * 2] = changedCells[k]!; dinfo[k * 2 + 1] = prevGi[k]!; }
+    dev.queue.writeBuffer(this.tDispatchInfo, 0, dinfo, 0, numChanged * 2);
+
+    const pbuf = new ArrayBuffer(32);
+    const pv = new DataView(pbuf);
+    pv.setFloat32(0, opts.mdlLambda, true);
+    pv.setUint32(4, G, true);
+    pv.setUint32(8, P, true);
+    pv.setUint32(12, numChanged, true);
+    pv.setFloat32(16, hystDelta, true);
+    dev.queue.writeBuffer(this.tParamsBuf, 0, pbuf);
+
+    const bind = dev.createBindGroup({
+      layout: this.tPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.alphaBuf } },
+        { binding: 1, resource: { buffer: this.gscalBuf } },
+        { binding: 2, resource: { buffer: this.targetBuf } },
+        { binding: 3, resource: { buffer: this.cstatBuf } },
+        { binding: 4, resource: { buffer: this.tOutGlyphPair } },
+        { binding: 5, resource: { buffer: this.tOutFB } },
+        { binding: 6, resource: { buffer: this.tParamsBuf } },
+        { binding: 7, resource: { buffer: this.tDispatchInfo } },
+        { binding: 8, resource: { buffer: this.tOutScore } },
+      ],
+    });
+
+    const tMatch = performance.now();
+    const enc = dev.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(this.tPipeline);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(numChanged);
+    pass.end();
+    enc.copyBufferToBuffer(this.tOutGlyphPair, 0, this.tStageGlyph, 0, numCells * 2 * 4);
+    enc.copyBufferToBuffer(this.tOutFB, 0, this.tStageFB, 0, numCells * 6 * F32);
+    enc.copyBufferToBuffer(this.tOutScore, 0, this.tStageScore, 0, numCells * 2 * F32);
+    dev.queue.submit([enc.finish()]);
+
+    await dev.queue.onSubmittedWorkDone();
+    await Promise.all([this.tStageGlyph.mapAsync(0x1), this.tStageFB.mapAsync(0x1), this.tStageScore.mapAsync(0x1)]);
+    const pairOut = new Uint32Array(this.tStageGlyph.getMappedRange().slice(0));
+    const fbOut = new Float32Array(this.tStageFB.getMappedRange().slice(0));
+    const scoreOut = new Float32Array(this.tStageScore.getMappedRange().slice(0));
+    this.tStageGlyph.unmap();
+    this.tStageFB.unmap();
+    this.tStageScore.unmap();
+    const matchMs = performance.now() - tMatch;
+
+    const glyphChosen = new Uint32Array(numCells);
+    const glyphBest = new Uint32Array(numCells);
+    const bestScore = new Float32Array(numCells);
+    const retainedScore = new Float32Array(numCells);
+    for (let c = 0; c < numCells; c++) {
+      glyphChosen[c] = pairOut[c * 2]!;
+      glyphBest[c] = pairOut[c * 2 + 1]!;
+      bestScore[c] = scoreOut[c * 2]!;
+      retainedScore[c] = scoreOut[c * 2 + 1]!;
+    }
+    return { glyphChosen, glyphBest, fb: fbOut, bestScore, retainedScore, matchMs };
   }
 }

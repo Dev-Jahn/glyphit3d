@@ -4,6 +4,7 @@ import { loadProfile } from './profile.js';
 import { renderPerf } from './perf.js';
 import { createCoalescer } from './coalescer.js';
 import { resolveRunContext } from './run-snapshot.js';
+import { keyframeNeeded, type TemporalKey } from './temporal-route.js';
 import type { Atlas } from '../../src/core/types.js';
 import './ui/index.js';
 
@@ -61,6 +62,21 @@ let rematchSeq = 0;
 // stale grid paired with the current (already-changed) params.
 let lastParams: Pick<Params, 'cols' | 'quality' | 'charset' | 'space' | 'floor'> | null = null;
 
+// feat/temporal-animation (DESIGN §4.9, SPEC §4.4). Temporal reuse is OFF by default so the shipping
+// path is byte-for-byte today's full rematch (parity/e2e untouched). HONEST STATUS: __app.setTemporal
+// and this router only ARM the keyframe decision — the Pipeline does NOT consume params.temporal yet
+// (pipeline.ts runGpu ignores it), so even with reuse "enabled" every frame is currently a full
+// rematch. Wiring the interactive delta+hyst path end-to-end is the registered follow-up
+// feat/temporal-interactive-wiring (see honestReport); the routing below is the state scaffold it
+// will use. Intended routing (once wired): mid-drag interactive runs with an unchanged config request
+// delta+hyst; every non-interactive run and every config change / model drop / device-lost keyframes
+// (full recompute + state reset), so exports and the SSIM badge always come from a parity-exact full
+// frame. `lastTemporalKey` is the last committed run's reset-matrix key; `forceKeyframe` is armed by
+// first run / model drop / device-lost / (re)enable.
+let temporalCfg: { enabled: boolean; delta: number } = { enabled: false, delta: 0 };
+let lastTemporalKey: TemporalKey | null = null;
+let forceKeyframe = true;
+
 function profileUrl(charset: Charset): string {
   return new URL(`profiles/dejavu-16-${charset}.json`, document.baseURI).href;
 }
@@ -94,7 +110,15 @@ async function rematch(interactive = false): Promise<void> {
     const snapshot = { cols: snap.cols, quality: snap.quality, charset: snap.charset, space: snap.space, floor: snap.floor };
     // The contrast floor rides the run params to BOTH pipeline paths (GPU host post-pass / CPU pool),
     // threaded from the same snapshot as everything else.
-    const out = await pipeline.run(scene, a, { ...runParams, contrastFloor: snap.floor }, interactive);
+    // Temporal routing (SPEC §4.4): compute this run's reset-matrix key from the SAME snapshot, then
+    // decide keyframe-vs-delta. Only when temporal reuse is enabled do we thread a temporal block;
+    // otherwise it stays undefined and the pipeline runs exactly today's full rematch. The key rides
+    // the snapshot so a config change can never tear from the keyframe decision it drives.
+    const nextTemporalKey: TemporalKey = { charset: snap.charset, cols: snap.cols, space: snap.space, quality: snap.quality, floor: snap.floor };
+    const temporal = temporalCfg.enabled
+      ? { epsilon: 0, delta: temporalCfg.delta, keyframe: keyframeNeeded({ interactive, prevKey: lastTemporalKey, nextKey: nextTemporalKey, forcedReset: forceKeyframe }) }
+      : undefined;
+    const out = await pipeline.run(scene, a, { ...runParams, contrastFloor: snap.floor, temporal }, interactive);
     // Stale-run guard (F1): a newer rematch started while this one was awaiting — drop it
     // whole. No mutation of screen, `last`, #ssim, perf, or the onOutput trigger, so a slow
     // older run cannot overwrite the current frame/state/exports with mismatched params.
@@ -102,6 +126,13 @@ async function rematch(interactive = false): Promise<void> {
     last = out;
     lastParams = snapshot;
     if (out.ssim != null) lastSsim = out.ssim;
+    // Temporal state commit (SPEC §4.4): remember this run's key so the NEXT run's reset-matrix diff
+    // is against what actually committed; a pool fallback (device-lost / WebGPU-absent) carries no
+    // GPU temporal state, so the next run must keyframe. Untouched when temporal reuse is disabled.
+    if (temporalCfg.enabled) {
+      lastTemporalKey = nextTemporalKey;
+      forceKeyframe = out.matcher === 'pool';
+    }
 
     rasterCanvas.width = out.raster.w;
     rasterCanvas.height = out.raster.h;
@@ -113,7 +144,8 @@ async function rematch(interactive = false): Promise<void> {
     // MutationObserver (the UI's new-output signal) even when the string is unchanged,
     // so the scrubber composite refreshes while a drag holds the pose still.
     ssimEl.textContent = lastSsim == null ? '—' : lastSsim.toFixed(4);
-    renderPerf(perfEl, out.timings);
+    // temporalStats is undefined on a full frame → the readout is today's string (SPEC §6.2).
+    renderPerf(perfEl, out.timings, out.temporalStats);
   } finally {
     busyCount--;
   }
@@ -150,6 +182,9 @@ document.addEventListener('drop', (e) => {
   const file = e.dataTransfer?.files?.[0];
   if (!file || !/\.(glb|gltf)$/i.test(file.name)) return;
   const url = URL.createObjectURL(file);
+  // A model drop invalidates any retained temporal reference frame (SPEC §4.4 reset matrix) → the
+  // next run must keyframe.
+  forceKeyframe = true;
   void scene.loadGLB(url).then(() => { params.yaw = scene.yawDeg; params.pitch = scene.pitchDeg; return coalescer.request(false); });
 });
 
@@ -159,6 +194,12 @@ declare global {
     __app: {
       rematch: () => Promise<void>;
       setParams: (p: Partial<Params>) => void;
+      // feat/temporal-animation: arm interactive temporal reuse and set the hysteresis margin δ
+      // (eacScale units). Off by default. Toggling always arms a keyframe so the next run rebuilds a
+      // clean reference frame. NOTE: currently a no-op end-to-end — the Pipeline does not consume
+      // params.temporal yet (feat/temporal-interactive-wiring, see honestReport), so this only sets
+      // the router flags; every run is still a full rematch until that path is wired.
+      setTemporal: (cfg: { enabled?: boolean; delta?: number }) => void;
       getState: () => { params: Params; ssim: number | null; busy: boolean };
       getOutput: () => PipelineOutput | null;
       getOutputParams: () => Pick<Params, 'cols' | 'quality' | 'charset' | 'space' | 'floor'> | null;
@@ -173,6 +214,13 @@ window.__app = {
   // rematch can never overlap an in-flight orbit/GPU match on the shared GpuMatcher.
   rematch: () => coalescer.request(false),
   setParams: (p) => { Object.assign(params, p); },
+  setTemporal: (cfg) => {
+    temporalCfg = {
+      enabled: cfg.enabled ?? temporalCfg.enabled,
+      delta: cfg.delta ?? temporalCfg.delta,
+    };
+    forceKeyframe = true; // rebuild a clean reference frame on the next run
+  },
   getState: () => ({ params: { ...params }, ssim: lastSsim, busy: busyCount > 0 || coalescer.busy }),
   getOutput: () => last,
   getOutputParams: () => lastParams,

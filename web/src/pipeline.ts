@@ -14,12 +14,20 @@ import type {
 // the matcher pick rows from it (gridRows corrects for the non-square glyph cell).
 const SCENE_ASPECT = 1;
 
+// feat/temporal-animation (DESIGN §4.9, SPEC §4). Temporal rematch knobs threaded from main.ts's
+// keyframe router. `epsilon`: working-space change-detector threshold (0 = exact delta). `delta`:
+// hysteresis margin in eacScale units (0 = no hysteresis). `keyframe`: force a full recompute +
+// temporal-state reset (first frame, any config change, model drop, device-lost, every
+// non-interactive run — SPEC §4.4). Absent ⇒ today's stateless full rematch on both paths.
+export interface TemporalParams { epsilon: number; delta: number; keyframe: boolean }
+
 export interface PipelineParams {
   cols: number;
   quality: 0 | 1 | 2 | 3 | 4;
   space: 'linear' | 'gamma';
   charset: string;
   contrastFloor?: number; // Round A ASCII-identity dark-path floor (0/absent = off). Threaded to BOTH paths: the GPU matcher applies it as a host per-cell post-pass, the CPU pool inside matchGrid.
+  temporal?: TemporalParams; // feat/temporal-animation: absent ⇒ full rematch (today's behavior).
 }
 
 export interface Timings { resample: number; match: number; raster: number; ssim: number }
@@ -29,6 +37,13 @@ export interface PipelineOutput {
   ssim: number | null; // P1: null on interactive runs (SSIM skipped)
   timings: Timings & { render: number; rasterGpuMs?: number };
   matcher: 'gpu' | 'pool'; // which path produced this run (WebGPU Q3 matcher vs the CPU pool)
+  // feat/temporal-animation (SPEC §4.4 provenance): which temporal path emitted this frame. A
+  // 'full' frame is byte-exact vs src/core/match.ts and is the ONLY provenance that may reach
+  // exports / the SSIM badge (SPEC §5.3). 'delta'/'delta+hyst' are interactive-only reuse frames.
+  temporal: 'full' | 'delta' | 'delta+hyst';
+  // Optional changed/total cell counts for the perf readout on a delta frame (SPEC §6.2). Undefined
+  // on a full frame; the temporal match path fills it once landed.
+  temporalStats?: { changed: number; total: number };
 }
 
 type WorkerResponse = BandResult | SsimResult | PrepResultMsg | ErrorResult;
@@ -105,6 +120,17 @@ export class Pipeline {
   // secure-context WebGPU) or the CPU pool (everything else / WebGPU absent), assemble, and (on
   // non-interactive runs) score. `interactive` skips the SSIM round-trip. The GPU path linearizes
   // in the prep worker (not here); only the pool path / fallback linearizes on the main thread.
+  //
+  // feat/temporal-animation SERIALIZATION DECISION (SPEC §4.4 / §2): NO Pipeline-level matcher
+  // mutex is added. The spec's §2 race note ("__app.rematch() / drop-handler can overlap the
+  // coalescing loop's in-flight run") predates the landed coalescer: main.ts now funnels EVERY
+  // run() caller — orbit move/end, drop, initial render, and the __app.rematch surface — through
+  // ONE createCoalescer single-flight (main.ts F1R-1), which guarantees at most one run() is ever
+  // in flight. So no direct-caller interleaving path exists to guard; a Pipeline mutex would be
+  // duplicate machinery over the coalescer. (No temporal reference state lives in the Pipeline today —
+  // params.temporal is not consumed here yet, see runGpu; when the interactive temporal path is wired,
+  // the same single-flight guarantee keeps its retained buffers touched by one run at a time. If a
+  // future caller ever invokes pipeline.run() OUTSIDE the coalescer, that guard must be revisited.)
   async run(scene: Scene, atlas: Atlas, params: PipelineParams, interactive: boolean): Promise<PipelineOutput> {
     const { cellW, cellH } = atlas;
     const gridW = params.cols * cellW;
@@ -221,6 +247,16 @@ export class Pipeline {
       ssim: ssimVal,
       timings: { render, resample, match: res.matchMs, raster, ssim: ssimMs, rasterGpuMs: rr.rasterGpuMs },
       matcher: 'gpu',
+      // Provenance (SPEC §4.4): this is a full same-frame rematch — byte-exact vs src/core/match.ts
+      // and safe for exports/SSIM. HONEST STATUS: the Pipeline does NOT consume params.temporal — the
+      // interactive delta/delta+hyst routing (SPEC §4.4/§8 Agent B) is UNLANDED, so every Pipeline run
+      // is a full rematch and this tag is always 'full' (temporalStats stays undefined). The landed
+      // temporal engine (GpuMatcher.matchPreppedTemporal / the GpuTemporal wrapper) is exercised only
+      // by the temporal harness (test-e2e/temporal.spec.ts drives GpuTemporal directly, bypassing the
+      // Pipeline). Wiring it into the interactive path — retained reference state driven off the worker
+      // prep + GpuRaster partial-cell upload — is the registered follow-up feat/temporal-interactive-
+      // wiring (see honestReport); until it lands, params.temporal is accepted but ignored here.
+      temporal: 'full',
     };
   }
 
@@ -292,6 +328,9 @@ export class Pipeline {
       ssim: ssimVal,
       timings: { render, resample, match: matchMax, raster: rasterMax, ssim: ssimMs },
       matcher: 'pool',
+      // The CPU pool is a capability boundary with no temporal mode (SPEC §4.4): it always emits a
+      // full rematch, exactly today's output.
+      temporal: 'full',
     };
   }
 }
