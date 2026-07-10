@@ -84,6 +84,33 @@ function linearFaintScene(atlas: Atlas): LinearImage {
   return { w, h, data };
 }
 
+// A CHROMATIC faint scene (direct linear values): each cell is a red-channel half-split over a dark
+// flat chroma base (G=B=0.02). The luma is carried almost entirely by the red channel whose mean
+// (~0.4) has a MUCH flatter sRGB slope than luma(mean) (~0.10, steep/dark) — so a floor rescale that
+// uses one slope at luma(mean) (the pre-fix bug) mis-scales these cells by the inter-channel slope
+// ratio and emits ≈half the intended displayed contrast. Splits are wide enough that the boosted
+// glyph is KEPT (not demoted), so the invariant assertion is non-vacuous. The achromatic
+// linearFaintScene above cannot expose this: there luma(mean)==channel mean, so one slope IS correct.
+function redFaintScene(atlas: Atlas): LinearImage {
+  const { cellW, cellH } = atlas;
+  const pairs: [number, number][] = [[0.16, 0.64], [0.15, 0.63], [0.17, 0.65], [0.14, 0.62], [0.18, 0.66], [0.16, 0.64]];
+  const cols = pairs.length;
+  const w = cols * cellW, h = cellH;
+  const data = new Float32Array(w * h * 3);
+  const half = Math.floor(cellH / 2);
+  for (let col = 0; col < cols; col++) {
+    const [bot, top] = pairs[col]!;
+    for (let ly = 0; ly < cellH; ly++) {
+      const r = ly < half ? top : bot;
+      for (let lx = 0; lx < cellW; lx++) {
+        const gi = (ly * w + col * cellW + lx) * 3;
+        data[gi] = r; data[gi + 1] = 0.02; data[gi + 2] = 0.02;
+      }
+    }
+  }
+  return { w, h, data };
+}
+
 // working-space (gamma u8) fg/bg luma separation of an emitted cell, normalized to [0,1].
 function sepU8(fg: [number, number, number] | null, bg: [number, number, number] | null): number {
   if (!fg || !bg) return NaN;
@@ -263,6 +290,67 @@ describe('contrast-floor: matchGrid integration', () => {
 // byte-identical to the GPU winner by the parity contract) over the SAME working-space target, and
 // asserting cell-for-cell equality vs matchGrid-with-floor — AND that WITHOUT the post-pass the grid
 // does NOT equal the floored reference (so the post-pass is load-bearing, not vacuously passing).
+// Space-invariance (fix/contrast-floor-linear-space). The floor denotes a DISPLAYED (sRGB-encoded)
+// luma separation, so floor=F must guarantee the SAME perceived contrast whether the fit ran in
+// gamma or linear working space. In BOTH modes the emitted fg/bg are u8 sRGB, so sepU8(fg,bg) IS the
+// displayed ΔL. Pre-fix the floor was a raw WORKING-space threshold: in linear mode a boosted glyph
+// was pinned to working sep = floor, but the sRGB encode (slope < 1 at mid tones) shrank the
+// DISPLAYED sep below the floor — invisible-ink under #space=linear. This test asserts every kept
+// glyph clears the displayed floor in both modes; it fails on the pre-fix code for linear (verified
+// by reverting fit.ts to the working-space threshold: linear kept glyphs emit ≈0.081 < 0.10).
+describe('contrast-floor: floor is space-invariant (displayed ΔL clears in gamma AND linear)', () => {
+  let atlas: Atlas;
+  beforeAll(async () => { atlas = await buildAtlas(FONT, 16, 'blocks'); }, 60000);
+
+  it('every kept glyph clears the DISPLAYED floor in both working spaces', () => {
+    const img = linearFaintScene(atlas); // mid-tone half-splits: linear sep ~0.07, below floor 0.10
+    const floor = 0.10;
+    for (const space of ['gamma', 'linear'] as const) {
+      const off = matchGrid(img, atlas, opts({ space, contrastFloor: 0 }));
+      const on = matchGrid(img, atlas, opts({ space, contrastFloor: floor }));
+      // Precondition: OFF really contains fitted cells whose DISPLAYED sep is below the floor
+      // (else the test is vacuous). sepU8 == displayed sep because emitted fg/bg are u8 sRGB.
+      const invisibleOff = off.cells.filter((c) => c.ch !== ' ' && sepU8(c.fg, c.bg) < floor).length;
+      expect(invisibleOff).toBeGreaterThan(0);
+      // Non-vacuous postcondition: some cells stay as boosted glyphs (not all demoted to space).
+      const keptOn = on.cells.filter((c) => c.ch !== ' ').length;
+      expect(keptOn).toBeGreaterThan(0);
+      // Invariant: every kept glyph clears the displayed floor (1/255 u8-rounding slack).
+      for (const c of on.cells) {
+        if (c.ch === ' ') continue;
+        expect(sepU8(c.fg, c.bg)).toBeGreaterThanOrEqual(floor - 1.01 / 255);
+      }
+    }
+  });
+
+  it('CHROMATIC kept glyphs clear the displayed floor in linear space (per-channel slope)', () => {
+    // Regression for fix/contrast-floor-linear-space major finding: the pre-fix code rescaled the
+    // displayed floor through ONE sRGB slope at luma(cell mean). On a chromatic cell (red half-split,
+    // luma carried by the red channel at mean ~0.4 but luma(mean) ~0.10) that slope is far too steep,
+    // so linear-mode kept glyphs emitted ~0.046 displayed sep — under HALF the 0.10 floor. Pre-fix
+    // this case NEVER demotes (its own too-small floorW makes the free fit look sufficient), so the
+    // sub-floor glyph is kept verbatim → invariant violated. The fix pins per-channel: displayed sep
+    // Σ_c w_c·f'(m_c)·a_c == floor. Gamma is bit-identical either way (passes both), so a failure here
+    // is specifically the linear per-channel bug.
+    const img = redFaintScene(atlas);
+    const floor = 0.10;
+    for (const space of ['gamma', 'linear'] as const) {
+      const off = matchGrid(img, atlas, opts({ space, contrastFloor: 0 }));
+      const on = matchGrid(img, atlas, opts({ space, contrastFloor: floor }));
+      // Precondition: OFF really contains chromatic cells whose DISPLAYED sep is below the floor.
+      const invisibleOff = off.cells.filter((c) => c.ch !== ' ' && sepU8(c.fg, c.bg) < floor).length;
+      expect(invisibleOff).toBeGreaterThan(0);
+      // Non-vacuous: the boosted chromatic glyphs are KEPT (not all demoted to space).
+      const keptOn = on.cells.filter((c) => c.ch !== ' ').length;
+      expect(keptOn).toBeGreaterThan(0);
+      for (const c of on.cells) {
+        if (c.ch === ' ') continue;
+        expect(sepU8(c.fg, c.bg)).toBeGreaterThanOrEqual(floor - 1.01 / 255);
+      }
+    }
+  });
+});
+
 describe('contrast-floor: WebGPU post-pass equals the CPU floored path', () => {
   let atlas: Atlas;
   beforeAll(async () => { atlas = await buildAtlas(FONT, 16, 'blocks'); }, 60000);

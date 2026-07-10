@@ -1,5 +1,4 @@
 import type { FitStatsG } from './types.js';
-import { luma } from './color.js';
 
 export interface FitResult { a: number; b: number; sse: number }
 
@@ -29,15 +28,31 @@ export function fitFgOnly(g: FitStatsG, SaT: number, S1T: number, STT: number, B
 }
 
 export type Vec3 = [number, number, number];
+
+// Rec.709 luma weights — the SAME projection color.ts luma() uses; the displayed-floor pin below
+// weights each channel's sRGB slope by these.
+const LUMA_W: readonly [number, number, number] = [0.2126, 0.7152, 0.0722];
+
+// d/dx of the [0,1] sRGB display encode (linearToSrgb(x)/255) — the local working→display
+// luma gain used to rescale the DISPLAY-space contrast floor into the linear working space
+// (see contrastFloorFit). Exact analytic derivative of color.ts linearToSrgb.
+function srgbSlope(x: number): number {
+  const c = x <= 0 ? 0 : x >= 1 ? 1 : x;
+  return c <= 0.0031308 ? 12.92 : (1.055 / 2.4) * Math.pow(c, 1 / 2.4 - 1);
+}
 // Contrast-floor decision (Round A ASCII-identity, feat/contrast-floor-fill). `space`=true
 // means demote the winning glyph to a solid flat cell (space + `mean`); false means keep the
 // glyph with the contrast-boosted colors (F,B). When null is returned the free fit already
 // clears the floor — the caller keeps it verbatim.
 export interface FloorDecision { space: boolean; F: Vec3; B: Vec3; mean: Vec3 }
 
-// Perceptual contrast floor on a two-color fit, in WORKING-space luma units (DESIGN §3.1
-// appearance model: pred = F·α + B·(1−α); a glyph is only legible as a *lightness* mark, so
-// the visibility axis is Rec.709 luma — the same projection color.ts/ssim use). Inputs are the
+// Perceptual contrast floor on a two-color fit. The floor is a DISPLAY-space (sRGB-encoded)
+// luma separation, so it means the SAME perceived contrast in gamma and linear working modes
+// (DESIGN §3.1 appearance model: pred = F·α + B·(1−α); a glyph is only legible as a *lightness*
+// mark, so the visibility axis is Rec.709 luma — the same projection color.ts/ssim use). The fit,
+// pin and gamut all stay in working space; the floor is a DISPLAYED sep, met per cell by scaling the
+// fit's chromatic axis through the PER-CHANNEL sRGB slopes at each channel mean (`space`; gamma →
+// slope 1, bit-identical to a raw working-space pin). Inputs are the
 // winner glyph's plain L2 Gram `g` {Saa=Σα², Sa1=Σα, S11=P}, its already-fit working-space
 // colors (F,B), and the cell's per-channel plain stats (ST=ΣT, STT=ΣT², SaT=Σα·T). `bgFixed`
 // is Q2 (fg-only: B is pinned at fixedBg and never re-solved).
@@ -81,11 +96,22 @@ export interface FloorDecision { space: boolean; F: Vec3; B: Vec3; mean: Vec3 }
 export function contrastFloorFit(
   g: FitStatsG, F: ArrayLike<number>, B: ArrayLike<number>,
   ST: ArrayLike<number>, STT: ArrayLike<number>, SaT: ArrayLike<number>,
-  P: number, floor: number, bgFixed: boolean,
+  P: number, floor: number, bgFixed: boolean, space: 'linear' | 'gamma' = 'gamma',
 ): FloorDecision | null {
-  const dL = Math.abs(luma(F[0]! - B[0]!, F[1]! - B[1]!, F[2]! - B[2]!));
-  if (dL >= floor) return null; // free fit already clears the floor
+  // Displayed (sRGB-encoded) luma separation of the fit's chromatic axis a=F−B, to first order.
+  // The display encode is nonlinear and applied PER CHANNEL, so the displayed sep is
+  // Σ_c w_c·f'(m_c)·a_c — the luma-weighted sum of the per-channel sRGB slopes at each channel's OWN
+  // mean m_c=ST_c/P, NOT a single slope at luma(mean) (that collapses to the right value only for an
+  // achromatic mark; on a chromatic cell it mis-scales by the inter-channel slope ratio — a red
+  // half-split then emits ≈half the intended displayed contrast). In gamma mode working IS display
+  // (f=id → slope 1 → dDisp==luma(a), bit-identical to a raw working-space pin).
   const mean: Vec3 = [ST[0]! / P, ST[1]! / P, ST[2]! / P];
+  const sl = (c: number): number => (space === 'gamma' ? 1 : srgbSlope(mean[c]!));
+  const dDisp = LUMA_W[0] * sl(0) * (F[0]! - B[0]!)
+              + LUMA_W[1] * sl(1) * (F[1]! - B[1]!)
+              + LUMA_W[2] * sl(2) * (F[2]! - B[2]!);
+  const dAbs = Math.abs(dDisp);
+  if (dAbs >= floor) return null; // free fit already clears the displayed floor
   // flat-fill (space) residual: free bg minimizes at the cell mean → E_AC; fixed bg fills at B.
   let sseSpace = 0;
   for (let c = 0; c < 3; c++) {
@@ -93,15 +119,15 @@ export function contrastFloorFit(
       ? STT[c]! - 2 * B[c]! * ST[c]! + P * B[c]! * B[c]!
       : STT[c]! - (ST[c]! * ST[c]!) / P;
   }
-  // isoluminant fit (no lightness axis to lift) → cannot be made legible by scaling; flat-fill.
-  if (dL < 1e-6) return { space: true, F: [...mean], B: [...mean], mean };
-  const s = floor / dL;
+  // isoluminant fit (no displayed lightness axis to lift) → cannot be made legible; flat-fill.
+  if (dAbs < 1e-6) return { space: true, F: [...mean], B: [...mean], mean };
+  const s = floor / dAbs; // pin s so the first-order displayed sep Σ_c w_c f'(m_c)·a_c·s == floor
   const rho = g.Sa1 / P; // ink fraction ρ; mean-preserving DC is b* = mean_c − a'·ρ (§3.2 normal eqn)
   const Fp: Vec3 = [0, 0, 0];
   const Bp: Vec3 = [0, 0, 0];
   let ssePin = 0;
   for (let c = 0; c < 3; c++) {
-    const a = (F[c]! - B[c]!) * s; // pinned AC: luma(a')=floor by construction of s
+    const a = (F[c]! - B[c]!) * s; // pinned AC: scales the fit axis so the first-order displayed sep == floor
     let b: number;
     if (bgFixed) {
       // Q2: bg pinned at fixedBg, so b is immovable. The only gamut lever is F'=b+a'; if it leaves

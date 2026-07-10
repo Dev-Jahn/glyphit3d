@@ -96,7 +96,7 @@ export function applyContrastFloor(
     }
 
     // Same decision + colours as match.ts (Q3 branch, bgFixed=false). null ⇒ keep the GPU cell.
-    const dec = contrastFloorFit(g, F, B, ST, STT, saT, P, floor, false);
+    const dec = contrastFloorFit(g, F, B, ST, STT, saT, P, floor, false, space);
     if (!dec) continue;
     cells[cell] = dec.space
       ? { ch: ' ', fg: null, bg: [encode(dec.mean[0]), encode(dec.mean[1]), encode(dec.mean[2])] }
