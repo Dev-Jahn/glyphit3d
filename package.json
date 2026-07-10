@@ -8,6 +8,7 @@
     "cli": "tsx src/cli.ts",
     "e2e": "tsx test-e2e/demo.spec.ts",
     "parity": "tsx test-e2e/webgpu-parity.spec.ts",
+    "temporal": "tsx test-e2e/temporal.spec.ts",
     "dev": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "profiles": "tsx scripts/export-atlas.ts"
