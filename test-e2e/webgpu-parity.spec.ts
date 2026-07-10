@@ -208,6 +208,71 @@ async function main(): Promise<void> {
   const perf = await page.evaluate('window.__parityPerf({source:"scene",charset:"blocks",cols:100,space:"gamma",label:"perf"}, 30)') as { matchMs: number; gpuMs: number; readbackMs: number; prepMs: number };
   console.log(`\nPerf @ cols=100/Q3/blocks/gamma (warm median of 30): GPU-compute(timestamp) ${perf.gpuMs.toFixed(2)}ms, match(dispatch→readback wall-clock) ${perf.matchMs.toFixed(2)}ms, map-latency ${perf.readbackMs.toFixed(2)}ms, cpu-prep ${perf.prepMs.toFixed(2)}ms`);
 
+  // ── perf/gpu-rasterizer (agent D, SPEC §5.3): GPU RASTER parity sweep ──────────────────
+  // Reference is the UNMODIFIED CPU raster toRGBA(rasterizeGrid(grid, atlas, space)). The GPU
+  // raster (agent A's GpuRaster) must match u8 per channel: maxΔ ≤ 1, ZERO gated-cell mismatches,
+  // and a bounded AA-fringe mismatch fraction (≤ 1e-4 gamma / ≤ 2e-3 linear — SPEC §5.3/§7 P3).
+  // Independent of the legacy 28-config matcher sweep above, which stays byte-exact and untouched.
+  // Per-config mismatch counts are the falsifiable prediction and are printed. NOTE: __rasterParity
+  // dynamically imports gpu-raster.js; until agent A lands it, each config throws "cannot find
+  // module" and is reported as a FAIL (the raster gate is genuinely not yet satisfiable — no
+  // silent skip). 13 configs: all 4 charsets, both spaces, cols {100,140}, 3 crafted fixtures,
+  // an alt pose.
+  const RASTER_DELTA_MAX = 1;           // u8 levels
+  const RASTER_FRAC_GAMMA = 1e-4;       // mismatch fraction ceiling, gamma space
+  const RASTER_FRAC_LINEAR = 2e-3;      // mismatch fraction ceiling, linear space
+  const rasterCfgs: Cfg[] = [
+    { label: 'raster:scene', source: 'scene', charset: 'blocks', cols: 100, space: 'gamma' },
+    { label: 'raster:scene', source: 'scene', charset: 'blocks', cols: 140, space: 'gamma' },
+    { label: 'raster:scene', source: 'scene', charset: 'blocks', cols: 100, space: 'linear' },
+    { label: 'raster:scene', source: 'scene', charset: 'ascii', cols: 100, space: 'gamma' },
+    { label: 'raster:scene', source: 'scene', charset: 'ascii', cols: 140, space: 'linear' },
+    { label: 'raster:scene', source: 'scene', charset: 'braille', cols: 100, space: 'gamma' },
+    { label: 'raster:scene', source: 'scene', charset: 'full', cols: 100, space: 'gamma' },
+    { label: 'raster:scene', source: 'scene', charset: 'full', cols: 140, space: 'linear' },
+    { label: 'raster:altpose', source: 'scene', charset: 'blocks', cols: 100, space: 'gamma', yaw: 120, pitch: 20 },
+    { label: 'raster:craft:washout', source: 'image', charset: 'blocks', cols: 100, space: 'gamma', image: craftWashout },
+    { label: 'raster:craft:checker', source: 'image', charset: 'ascii', cols: 100, space: 'linear', image: craftChecker },
+    { label: 'raster:craft:hi-dc', source: 'image', charset: 'blocks', cols: 100, space: 'gamma', image: craftHiDc },
+    { label: 'raster:craft:hi-dc', source: 'image', charset: 'full', cols: 100, space: 'linear', image: craftHiDc },
+  ];
+  const rasterActive = process.env.PARITY_QUICK
+    ? rasterCfgs.filter((c) => c.source === 'scene' && c.charset === 'blocks' && c.cols === 100)
+    : rasterCfgs;
+
+  console.log('\n---------------- GPU RASTER PARITY (perf/gpu-rasterizer §5.3) ----------------');
+  let rasterFailures = 0;
+  for (const cfg of rasterActive) {
+    let r: Record<string, number> | null = null;
+    try {
+      r = await page.evaluate((c) => window.__rasterParity(c as any), {
+        source: cfg.source, charset: cfg.charset, cols: cfg.cols, space: cfg.space,
+        yaw: cfg.yaw, pitch: cfg.pitch, imageDataUrl: cfg.image, label: cfg.label,
+      }) as Record<string, number>;
+    } catch (e) {
+      rasterFailures++;
+      console.log(`  FAIL [${cfg.label} ${cfg.charset} c${cfg.cols} ${cfg.space}] __rasterParity threw: ${(e as Error).message.split('\n')[0]}`);
+      continue;
+    }
+    const frac = (r.mismatchCount as number) / (r.totalSamples as number);
+    const fracMax = cfg.space === 'linear' ? RASTER_FRAC_LINEAR : RASTER_FRAC_GAMMA;
+    const problems: string[] = [];
+    if ((r.maxDelta as number) > RASTER_DELTA_MAX) problems.push(`maxΔ ${r.maxDelta} > ${RASTER_DELTA_MAX}`);
+    if ((r.gatedMismatchCount as number) !== 0) problems.push(`${r.gatedMismatchCount} gated-cell mismatches`);
+    if ((r.alphaMismatch as number) !== 0) problems.push(`${r.alphaMismatch} alpha≠255`);
+    if (frac > fracMax) problems.push(`mismatch frac ${frac.toExponential(2)} > ${fracMax}`);
+    const ok = problems.length === 0;
+    if (!ok) rasterFailures++;
+    console.log(
+      `  ${ok ? 'PASS' : 'FAIL'} [${cfg.label} ${cfg.charset} c${cfg.cols} ${cfg.space}] ` +
+      `maxΔ ${r.maxDelta}, mismatch ${r.mismatchCount}/${r.totalSamples} (${frac.toExponential(2)}), ` +
+      `gatedMiss ${r.gatedMismatchCount}, alphaMiss ${r.alphaMismatch}, ` +
+      `rasterGPU ${(r.rasterGpuMs as number).toFixed(2)}ms wall ${(r.rasterWallMs as number).toFixed(2)}ms` +
+      (ok ? '' : `  <-- ${problems.join('; ')}`),
+    );
+  }
+  console.log(`\n${rasterActive.length - rasterFailures}/${rasterActive.length} raster configs pass (maxΔ ≤ ${RASTER_DELTA_MAX}, gated-miss = 0, frac ≤ ${RASTER_FRAC_GAMMA} gamma / ≤ ${RASTER_FRAC_LINEAR} linear).`);
+
   await page.close();
   await dev.close();
   await browser.close();
@@ -226,8 +291,9 @@ async function main(): Promise<void> {
     : `§7.1 GPU-compute prediction met (timestamp ${perf.gpuMs.toFixed(2)}ms < ${MATCH_MS_MAX}ms). Wall-clock ${perf.matchMs.toFixed(2)}ms is map-latency-bound (${perf.readbackMs.toFixed(2)}ms), not compute.`);
   console.log('\nno-flag repro: npx tsx test-e2e/webgpu-parity.spec.ts');
 
-  // §6 parity is the correctness gate that must hold. Perf is a measured on-record prediction.
-  if (failures) process.exit(1);
+  // §6 matcher parity + §5.3 raster parity are the correctness gates that must hold. Perf is a
+  // measured on-record prediction.
+  if (failures || rasterFailures) process.exit(1);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

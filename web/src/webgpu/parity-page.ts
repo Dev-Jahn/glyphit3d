@@ -9,6 +9,7 @@ import type { Atlas, GridCell, Grid, LinearImage, FitStatsG } from '../../../src
 import { matchGrid } from '../../../src/core/match.js';
 import { defaultOptions, gridRows } from '../../../src/core/options.js';
 import { rasterizeGrid } from '../../../src/render/raster.js';
+import { linearToSrgb } from '../../../src/core/color.js';
 import { ssim } from '../../../src/metric/ssim.js';
 import { cellStats } from '../../../src/core/stats.js';
 import { fitFree, fitBox } from '../../../src/core/fit.js';
@@ -65,6 +66,94 @@ async function getAtlas(charset: string): Promise<Atlas> {
 
 let scene: Scene | null = null;
 let gpu: GpuMatcher | null = null;
+
+// ── perf/gpu-rasterizer (agent D, SPEC §5.3): GPU raster parity harness ─────────────
+// GpuRaster (agent A's web/src/webgpu/gpu-raster.ts) is the WebGPU port of the demo's
+// display raster: it reproduces toRGBA(rasterizeGrid(grid, atlas, space)) — the packed
+// RGBA8 committed by putImageData — on the GPU from the CPU-assembled Grid. Its interface
+// is the frozen contract from the §3 ownership table; the exact shape assumed here (so this
+// harness compiles/runs against it the moment agent A lands) is documented on GpuRasterLike.
+// The module is DYNAMICALLY imported inside runRasterParity so this page still loads and the
+// LEGACY 28-config matcher sweep stays runnable+green while agent A is still landing — a
+// static import of a not-yet-present module would break the whole parity page.
+/* eslint-disable @typescript-eslint/no-explicit-any */
+interface GpuRasterResult { data: Uint8ClampedArray; w: number; h: number; rasterGpuMs: number; rasterWallMs: number }
+interface GpuRasterLike { render: (grid: Grid, atlas: Atlas, space: 'linear' | 'gamma') => Promise<GpuRasterResult> }
+let gpuRaster: GpuRasterLike | null = null;
+
+// Byte-identical mirror of pipeline.ts toRGBA — the exact production reference the GPU raster
+// must reproduce (LinearImage → sRGB u8 RGBA, alpha 255). Kept local because pipeline.ts's
+// toRGBA is not exported and pipeline.ts is agent C's (do-not-touch here).
+function toRGBA(img: LinearImage): Uint8ClampedArray {
+  const n = img.w * img.h;
+  const out = new Uint8ClampedArray(n * 4);
+  for (let i = 0; i < n; i++) {
+    out[i * 4] = Math.round(linearToSrgb(img.data[i * 3]!));
+    out[i * 4 + 1] = Math.round(linearToSrgb(img.data[i * 3 + 1]!));
+    out[i * 4 + 2] = Math.round(linearToSrgb(img.data[i * 3 + 2]!));
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+// Raster parity for ONE config (SPEC §5.1 criterion). Builds the CPU-truth grid (matchGrid),
+// the CPU reference raster toRGBA(rasterizeGrid(grid, atlas, space)), and the GpuRaster.render
+// output on the IDENTICAL grid, then compares u8 per channel. Reports maxDelta, per-channel
+// mismatch count / total samples, gated-cell mismatch count (must be 0 — gated cells are the
+// all-α=0 space glyph, an exact integer endpoint), alpha-byte mismatches, and the raster timings.
+async function runRasterParity(cfg: ParityCfg): Promise<Record<string, number | string | boolean>> {
+  const atlas = await getAtlas(cfg.charset);
+  const { cellW, cellH } = atlas;
+  const rows = gridRows(cfg.cols, 1, 1, cellW, cellH);
+  const gridW = cfg.cols * cellW, gridH = rows * cellH;
+
+  const imgData = await footprintImageData(cfg, gridW, gridH);
+  const lin = imageDataToLinear(imgData);
+  const opts = defaultOptions(3);
+  opts.space = cfg.space;
+
+  // CPU-truth grid (matchGrid consumes lin.data; copy so nothing downstream sees a mutated ref).
+  const grid = matchGrid({ w: lin.w, h: lin.h, data: lin.data.slice(0) }, atlas, opts);
+  const ref = toRGBA(rasterizeGrid(grid, atlas, cfg.space));
+
+  const { GpuRaster } = await import('./gpu-raster.js') as { GpuRaster: { create: () => Promise<GpuRasterLike | null> } };
+  if (!gpuRaster) gpuRaster = await GpuRaster.create();
+  if (!gpuRaster) throw new Error('WebGPU unavailable in this context (navigator.gpu / adapter / device)');
+  const gr = await gpuRaster.render(grid, atlas, cfg.space);
+  const got = gr.data;
+
+  const w = gridW, h = gridH;
+  if (got.length !== ref.length) throw new Error(`GpuRaster returned ${got.length} bytes, expected ${ref.length} (w=${w} h=${h})`);
+
+  // Per-cell gated flag (fg === null ⇒ the space glyph, every pixel is the bg endpoint exactly).
+  const gated = new Uint8Array(cfg.cols * rows);
+  for (let i = 0; i < gated.length; i++) gated[i] = grid.cells[i] && grid.cells[i]!.fg === null ? 1 : 0;
+
+  let maxDelta = 0, mismatchCount = 0, gatedMismatchCount = 0, alphaMismatch = 0;
+  const totalSamples = w * h * 3;
+  for (let y = 0; y < h; y++) {
+    const cy = (y / cellH) | 0;
+    for (let x = 0; x < w; x++) {
+      const p = (y * w + x) * 4;
+      const cell = cy * cfg.cols + ((x / cellW) | 0);
+      const isGated = gated[cell] === 1;
+      for (let k = 0; k < 3; k++) {
+        const d = Math.abs(ref[p + k]! - got[p + k]!);
+        if (d > maxDelta) maxDelta = d;
+        if (d > 0) { mismatchCount++; if (isGated) gatedMismatchCount++; }
+      }
+      if (got[p + 3] !== 255) alphaMismatch++;
+    }
+  }
+
+  return {
+    label: cfg.label, source: cfg.source, charset: cfg.charset, cols: cfg.cols, space: cfg.space,
+    w, h, numCells: cfg.cols * rows,
+    maxDelta, mismatchCount, totalSamples, gatedMismatchCount, alphaMismatch,
+    rasterGpuMs: gr.rasterGpuMs, rasterWallMs: gr.rasterWallMs,
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {
@@ -216,6 +305,7 @@ async function perfProbe(cfg: ParityCfg, n: number): Promise<{ matchMs: number; 
 declare global {
   interface Window {
     __parity: (cfg: ParityCfg) => Promise<Record<string, number | string | boolean>>;
+    __rasterParity: (cfg: ParityCfg) => Promise<Record<string, number | string | boolean>>;
     __parityPerf: (cfg: ParityCfg, n: number) => Promise<{ matchMs: number; gpuMs: number; readbackMs: number; prepMs: number }>;
     __gpuInfo: () => Promise<Record<string, unknown>>;
     __parityReady: boolean;
@@ -223,6 +313,7 @@ declare global {
 }
 
 window.__parity = runParity;
+window.__rasterParity = runRasterParity;
 window.__parityPerf = perfProbe;
 window.__gpuInfo = async () => {
   const g = (navigator as unknown as { gpu?: { requestAdapter: () => Promise<{ info?: unknown } | null> } }).gpu;

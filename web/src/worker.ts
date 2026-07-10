@@ -1,11 +1,13 @@
 /// <reference lib="webworker" />
-import type { Atlas, GridCell, LinearImage } from '../../src/core/types.js';
+import type { Atlas, Grid, GridCell, LinearImage } from '../../src/core/types.js';
 import { matchGrid } from '../../src/core/match.js';
 import { rampGrid } from '../../src/core/ramp.js';
 import { rasterizeGrid } from '../../src/render/raster.js';
 import { ssim } from '../../src/metric/ssim.js';
 import { linearToSrgb } from '../../src/core/color.js';
 import { defaultOptions } from '../../src/core/options.js';
+import { prepQ3 } from './webgpu/prep.js';
+import type { PrepParams } from './webgpu/prep.js';
 
 // Worker pool member (Round P / P2). The heavy CPU stages are the existing src/
 // modules imported verbatim — no logic is forked here. Two request kinds:
@@ -29,7 +31,27 @@ export interface SsimRequest {
   a: { w: number; h: number; data: Float32Array };
   b: { w: number; h: number; data: Float32Array };
 }
-export type WorkerRequest = SetAtlasRequest | MatchBandRequest | SsimRequest;
+// perf/gpu-rasterizer R2 (SPEC §4.3): the Q3 prep loop relocated off the main thread. `img` is
+// the grid-footprint ImageData (u8 RGBA, transferred in). `targetHost`/`cstatHost` are the
+// caller's ping-pong spares (transferred in and filled without allocation); `wantLin` requests
+// the full-image linear reference for the non-interactive SSIM path (§4.2). No atlas needed.
+export interface PrepQ3Request {
+  type: 'prepQ3'; id: number;
+  img: { width: number; height: number; data: Uint8ClampedArray };
+  params: PrepParams;
+  wantLin: boolean;
+  targetHost?: Float32Array;
+  cstatHost?: Float32Array;
+}
+// R3 (SPEC §4.2): rasterize the GPU-assembled grid + score SSIM in ONE worker hop so the raster
+// stays out of the main thread and the metric spans band seams. `ref` is the linear reference;
+// atlas comes from the existing setAtlas broadcast. Result reuses SsimResult.
+export interface RasterSsimRequest {
+  type: 'rasterSsim'; id: number; charset: string; space: 'linear' | 'gamma';
+  cols: number; rows: number; cells: GridCell[];
+  ref: { w: number; h: number; data: Float32Array };
+}
+export type WorkerRequest = SetAtlasRequest | MatchBandRequest | SsimRequest | PrepQ3Request | RasterSsimRequest;
 
 export interface BandTimings { match: number; raster: number }
 export interface BandResult {
@@ -40,6 +62,14 @@ export interface BandResult {
   timings: BandTimings;
 }
 export interface SsimResult { type: 'ssim'; id: number; ssim: number }
+// prepQ3 reply: the upload-ready buffers (transferred back) + CPU-decided gated cells. `lin` is
+// present only when the request set wantLin.
+export interface PrepResultMsg {
+  type: 'prep'; id: number;
+  targetHost: Float32Array; cstatHost: Float32Array;
+  gated: (GridCell | undefined)[]; gatedCount: number;
+  lin: Float32Array | null;
+}
 export interface ErrorResult { type: 'error'; id: number; message: string }
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -68,6 +98,27 @@ ctx.onmessage = (e: MessageEvent<WorkerRequest>) => {
     }
     if (msg.type === 'ssim') {
       const s = ssim({ w: msg.a.w, h: msg.a.h, data: msg.a.data }, { w: msg.b.w, h: msg.b.h, data: msg.b.data });
+      ctx.postMessage({ type: 'ssim', id: msg.id, ssim: s } satisfies SsimResult);
+      return;
+    }
+    if (msg.type === 'prepQ3') {
+      const res = prepQ3(msg.img, msg.params, { targetHost: msg.targetHost, cstatHost: msg.cstatHost, wantLin: msg.wantLin });
+      const transfer: Transferable[] = [res.targetHost.buffer, res.cstatHost.buffer];
+      if (res.lin) transfer.push(res.lin.buffer);
+      ctx.postMessage({
+        type: 'prep', id: msg.id,
+        targetHost: res.targetHost, cstatHost: res.cstatHost,
+        gated: res.gated, gatedCount: res.gatedCount, lin: res.lin,
+      } satisfies PrepResultMsg, transfer);
+      return;
+    }
+    if (msg.type === 'rasterSsim') {
+      const atlas = atlases.get(msg.charset);
+      if (!atlas) throw new Error(`worker: no atlas set for charset '${msg.charset}' (setAtlas first)`);
+      const grid: Grid = { cols: msg.cols, rows: msg.rows, cells: msg.cells, cellW: atlas.cellW, cellH: atlas.cellH, font: atlas.fontPath };
+      // raster space MUST equal the fit space (M0 color-space lesson; matches pipeline runGpu).
+      const out = rasterizeGrid(grid, atlas, msg.space);
+      const s = ssim(out, { w: msg.ref.w, h: msg.ref.h, data: msg.ref.data });
       ctx.postMessage({ type: 'ssim', id: msg.id, ssim: s } satisfies SsimResult);
       return;
     }

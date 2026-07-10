@@ -8,9 +8,11 @@
 That sentence is the **thesis**. What actually ships today is the first two
 clauses, on CPU: a 3D G-buffer bake pipeline and a continuous-coverage two-color
 matcher that already edges [chafa](https://hpjansson.org/chafa/) on the shared
-benchmark. Temporal stability is on the roadmap; the **WebGPU Q3 matcher** now ships —
-but the full GPU raster remains a follow-up, so the interactive loop is not yet
-GPU-real-time end to end. See [Status](#status).
+benchmark. Temporal stability is on the roadmap; the **WebGPU Q3 matcher and GPU display
+raster** now ship, with the working-space prep relocated off the main thread —
+so the interactive loop holds a single ~50ms frame budget rather than blocking on
+a per-frame CPU raster (measured longest main-thread stall 11ms, ~14 glyph
+updates/s during a continuous orbit, headless on this box). See [Status](#status).
 
 ![native 3D render on the left, the same frame rendered entirely in text on the right](docs/assets/hero.png)
 
@@ -176,8 +178,17 @@ Roadmap milestones (full plan in [DESIGN.md §12](DESIGN.md)):
   parity harness), GPU compute ~1.25ms vs ~118ms pool. The WebGL2 render and the
   WebGPU match both run on the GPU on a secure context; browsers without WebGPU use
   the CPU pool. See [docs/WEBGPU-MATCHER-SPEC.md](docs/WEBGPU-MATCHER-SPEC.md).
+- **GPU display raster + interactive gate — shipped (2026-07).** The Q3 display
+  raster moved to a WebGPU compute pass and the working-space prep to a worker, so
+  the main thread no longer runs a synchronous per-frame CPU raster. The interactive
+  loop now holds a single ~50ms long-task budget: the E2E liveness probe measures a
+  longest main-thread stall of **11ms** during a rematch and **14 glyph updates/s**
+  during a continuous orbit drag (headless ANGLE-Vulkan on the RTX PRO 6000).
+  GPU-raster parity vs the CPU reference is **|Δ| ≤ 1 u8** per channel (gamma mostly
+  bit-exact; gated cells exact). Check-7 now asserts `matcher==='gpu'`, maxGap < 50ms,
+  and ≥ 5 glyph updates/s.
 
-Unit tests: `npx vitest run` (126 passing). E2E: `npm run e2e` (9/9).
+Unit tests: `npx vitest run` (233 passing). E2E: `npm run e2e` (9/9).
 
 The founding design document is [DESIGN.md](DESIGN.md) — including the honest
 prior-art table and the forbidden-claims list that constrains all copy here.

@@ -21,7 +21,7 @@ const ESC = '\x1b';
 
 interface CheckResult { n: number; name: string; pass: boolean; detail: string }
 const results: CheckResult[] = [];
-let perf: { render: number; resample: number; match: number; raster: number; ssim: number } | null = null;
+let perf: { render: number; resample: number; match: number; raster: number; ssim: number; rasterGpuMs?: number } | null = null;
 
 async function check(n: number, name: string, fn: () => Promise<string>): Promise<void> {
   try {
@@ -340,21 +340,25 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
     return `fragment ${hash} → reload restored {cols:140, quality:1, charset:ascii, space:linear, floor:0.1}`;
   });
 
-  await check(7, 'Perf at defaults: match+raster < 500ms; main thread stays live during a rematch', async () => {
+  await check(7, 'Perf at defaults: match+raster < 500ms; GPU path stays live (maxGap<50ms) + interactive throughput ≥ 5/s', async () => {
     assert.ok(perf, 'no default perf captured');
     const interactive = perf.match + perf.raster;
     assert.ok(interactive < 500, `interactive (match+raster) ${interactive.toFixed(1)}ms >= 500ms`);
 
-    // Liveness guard. In the GPU path the match runs on the GPU (async — the main thread
-    // stays live during dispatch→readback) and SSIM runs on a worker, but the raster is a
-    // SYNCHRONOUS CPU pass on the MAIN thread (~96ms, pipeline.ts runGpu) tracked as the
-    // remaining interactive bottleneck by perf/gpu-rasterizer. Beat a setTimeout(0)
-    // heartbeat while a rematch runs — it can only tick when the main thread is free, so its
-    // gaps measure main-thread stalls: assert it ticked repeatedly, that the longest stall
-    // does NOT span the whole rematch (a live window remains ⇒ the async GPU-match / worker-
-    // SSIM windows yield, not all-on-main-thread), and that the longest main-thread stall
-    // stays under a loose ceiling (dominated by the CPU raster today; tighten to a frame
-    // budget once perf/gpu-rasterizer moves the raster to the GPU).
+    // OQ1 / perf/gpu-rasterizer: the heartbeat must measure the GPU path. Check 6 left the app
+    // at quality=1/ascii/linear (its reload round-trip), which routes to the CPU pool — so
+    // restore the Q3 defaults first, else the tightened budget below would measure the wrong
+    // path and be vacuous (exactly what OQ1 exists to prevent).
+    await afterRematch(page, () => page.evaluate(() => { window.__app.setParams({ cols: 100, quality: 3, charset: 'blocks', space: 'gamma' }); return window.__app.rematch(); }));
+
+    // Liveness guard. In the GPU path the match runs on the GPU (async), the working-space prep
+    // runs in a worker (perf/gpu-rasterizer R2), and the display raster runs on the GPU
+    // (R1, async readback) — so no single main-thread block should exceed one ~50ms frame. Beat
+    // a setTimeout(0) heartbeat while a fresh Q3 rematch runs: it can only tick when the main
+    // thread is free, so its gaps measure main-thread stalls. Assert it ticked repeatedly, that
+    // the longest stall does NOT span the whole rematch (async GPU/worker windows yield), and
+    // that the longest stall stays under the ~50ms long-task frame budget (the largest expected
+    // block is renderToImageData + the async-readback display commit, ~10–15ms).
     // NOTE: no nested named function — tsx/esbuild's `__name` helper would be undefined
     // in the page. The heartbeat is an anonymous setInterval callback; state lives in an
     // object so the arrow can mutate it without a `const beat = …` binding.
@@ -371,22 +375,65 @@ async function runDevChecks(page: Page, baseURL: string): Promise<void> {
       await window.__app.rematch();
       const dur = performance.now() - t0;
       clearInterval(timer);
-      return { ticks: s.ticks, maxGap: s.maxGap, dur, changed: window.__app.getOutput() !== before };
-    }) as { ticks: number; maxGap: number; dur: number; changed: boolean };
+      const out = window.__app.getOutput();
+      return { ticks: s.ticks, maxGap: s.maxGap, dur, changed: out !== before, matcher: out.matcher };
+    }) as { ticks: number; maxGap: number; dur: number; changed: boolean; matcher: string };
 
     assert.ok(probe.changed, 'liveness rematch did not produce a fresh output');
+    // The probed rematch must run on the WebGPU matcher — a silent WebGPU regression would route
+    // to the CPU pool and the tightened budget would measure the wrong path (vacuous again).
+    // Chrome-for-Testing exposes headless WebGPU (proven in the matcher round), so 'gpu' is the
+    // required path at Q3 defaults on this box.
+    assert.equal(probe.matcher, 'gpu', `probed rematch used the '${probe.matcher}' path, not the WebGPU matcher (tightened budget would be vacuous)`);
     assert.ok(probe.ticks >= 3, `main thread starved during rematch: only ${probe.ticks} heartbeat(s) in ${probe.dur.toFixed(0)}ms`);
-    // The longest stall must not span the whole rematch: the async GPU-match + worker-SSIM
-    // windows yield the main thread, leaving a live window of `dur - maxGap`. An all-on-main
-    // rematch would be one contiguous block (maxGap ≈ dur ⇒ live window ≈ 0).
+    // The longest stall must not span the whole rematch: the async GPU-match + worker-prep +
+    // async GPU-raster windows yield the main thread, leaving a live window of `dur - maxGap`.
     const liveWindow = probe.dur - probe.maxGap;
-    assert.ok(liveWindow > 20, `main thread never yielded: live window ${liveWindow.toFixed(0)}ms of a ${probe.dur.toFixed(0)}ms rematch (⇒ match/ssim ran on main thread)`);
-    // Metric: longest main-thread stall. Loose ceiling — the ~96ms synchronous CPU raster is
-    // the largest block today. TODO(perf/gpu-rasterizer): once the raster moves to the GPU,
-    // tighten this toward a single frame (~50ms) as a real long-task budget.
-    assert.ok(probe.maxGap < 250, `longest main-thread stall ${probe.maxGap.toFixed(0)}ms over the 250ms ceiling (CPU raster regressed?)`);
+    assert.ok(liveWindow > 20, `main thread never yielded: live window ${liveWindow.toFixed(0)}ms of a ${probe.dur.toFixed(0)}ms rematch (⇒ match/prep/raster ran on main thread)`);
+    // Tightened per OQ1 from the old loose 250ms ceiling to a single ~50ms long-task frame
+    // budget: with the raster on the GPU and the prep in a worker, no single main-thread block
+    // should exceed one frame. A larger stall means raster/prep is still blocking the main thread.
+    assert.ok(probe.maxGap < 50, `longest main-thread stall ${probe.maxGap.toFixed(0)}ms over the 50ms frame budget (raster/prep still on the main thread?)`);
 
-    return `render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms · ssim ${perf.ssim.toFixed(1)}ms → interactive ${interactive.toFixed(1)}ms; liveness ${probe.ticks} beats, max stall ${probe.maxGap.toFixed(0)}/${probe.dur.toFixed(0)}ms`;
+    // "interactive smooth" substance check (OQ1 §6.2): during a continuous ~2s stage-body orbit,
+    // count distinct PipelineOutputs committed and assert a conservative throughput floor of
+    // ≥ 5 glyph updates/s (prediction 8–12/s headless). This is the measurable content behind any
+    // "interactive/smooth" claim. An in-page 4ms poller counts reference changes on getOutput()
+    // (it can only UNDERcount if two commits land between polls ⇒ conservative for a floor).
+    const box = await page.locator('.scrub-stage').boundingBox();
+    assert.ok(box, 'scrub-stage not found');
+    const y = box.y + box.height / 2;
+    // Park the divider hard-right via its handle so the stage-body press below can't land on it.
+    await grabHandle(page);
+    await page.mouse.move(box.x + box.width * 0.9, y, { steps: 3 });
+    await page.mouse.up();
+    // Press the stage BODY far from the divider (x=30%) and orbit continuously.
+    await page.mouse.move(box.x + box.width * 0.3, y);
+    await page.mouse.down();
+    await page.evaluate(() => {
+      window.__thr = { last: window.__app.getOutput(), count: 0, t0: performance.now() };
+      window.__thrTimer = setInterval(() => {
+        const o = window.__app.getOutput();
+        if (o !== window.__thr.last) { window.__thr.last = o; window.__thr.count++; }
+      }, 4);
+    });
+    const orbitStart = Date.now();
+    let k = 0;
+    while (Date.now() - orbitStart < 2000) {
+      const frac = 0.3 + 0.35 * Math.abs(Math.sin(k * 0.35));
+      await page.mouse.move(box.x + box.width * frac, y, { steps: 2 });
+      k++;
+    }
+    const thr = await page.evaluate(() => {
+      clearInterval(window.__thrTimer);
+      return { count: window.__thr.count, dt: performance.now() - window.__thr.t0 };
+    }) as { count: number; dt: number };
+    await page.mouse.up();
+    await page.waitForFunction('!window.__app.getState().busy', { timeout: 60000 });
+    const updatesPerSec = thr.count / (thr.dt / 1000);
+    assert.ok(updatesPerSec >= 5, `interactive throughput ${updatesPerSec.toFixed(1)} updates/s < 5/s floor (${thr.count} commits in ${thr.dt.toFixed(0)}ms)`);
+
+    return `render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms (gpu ${(perf.rasterGpuMs ?? 0).toFixed(2)}ms) · ssim ${perf.ssim.toFixed(1)}ms → interactive ${interactive.toFixed(1)}ms; matcher ${probe.matcher}, liveness ${probe.ticks} beats, maxGap ${probe.maxGap.toFixed(0)}/${probe.dur.toFixed(0)}ms; throughput ${updatesPerSec.toFixed(1)} updates/s (${thr.count} commits/${(thr.dt / 1000).toFixed(1)}s)`;
   });
 
   await check(8, 'Realtime orbit: stage-body drag re-matches mid-drag and moves the pose, not the divider', async () => {
@@ -492,7 +539,7 @@ async function main(): Promise<void> {
   for (const r of results) console.log(`[${r.n}] ${r.pass ? 'PASS' : 'FAIL'}  ${r.name}`);
   if (perf) {
     const inter = perf.match + perf.raster;
-    console.log(`\nPerf @ defaults (cols=100,Q3,blocks,gamma): render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms · ssim ${perf.ssim.toFixed(1)}ms · interactive(match+raster) ${inter.toFixed(1)}ms`);
+    console.log(`\nPerf @ defaults (cols=100,Q3,blocks,gamma): render ${perf.render.toFixed(1)}ms · match ${perf.match.toFixed(1)}ms · raster ${perf.raster.toFixed(1)}ms (gpu ${(perf.rasterGpuMs ?? 0).toFixed(2)}ms) · ssim ${perf.ssim.toFixed(1)}ms · interactive(match+raster) ${inter.toFixed(1)}ms`);
   }
   const failed = results.filter((r) => !r.pass);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed.`);

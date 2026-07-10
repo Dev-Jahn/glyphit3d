@@ -2,6 +2,8 @@ import type { Atlas, GridCell, LinearImage } from '../../../src/core/types.js';
 import { linearToSrgb } from '../../../src/core/color.js';
 import { applyContrastFloor } from './contrast-floor-post.js';
 import { MATCHER_WGSL } from './matcher-wgsl.js';
+import { scanCells } from './prep.js';
+import type { Prepped } from './prep.js';
 
 // WebGPU compute matcher for the Q3 default web path (perf/webgpu-matcher, SPEC §1–§5).
 // It reproduces matchGrid's Q3/gamma outcome (families=[], topK=0, orientKappa=0, no AOV,
@@ -181,97 +183,33 @@ export class GpuMatcher {
     this.cellP = P;
   }
 
-  // Run the Q3 match. `lin` is the grid-footprint linear reference (w == cols*cellW,
-  // h == rows*cellH). Returns assembled GridCell[] plus timings.
-  async match(lin: LinearImage, atlas: Atlas, opts: GpuMatchOpts, cols: number, rows: number): Promise<GpuMatchResult> {
+  // Upload + dispatch + readback + assemble for an already-prepped cell block. `prepped` carries
+  // the working-space target patches (targetHost, numCells·3·P), the per-cell stat/gate block
+  // (cstatHost, numCells·16) and the CPU-decided gated cells — produced either by the relocated
+  // worker prep (prep.ts prepQ3) or by match()'s inline prep below. Everything upstream of here
+  // is byte-identical to src/core/match.ts (SPEC §4.3/§5.1); this method touches only the GPU.
+  // prepMs here is the main-thread upload residue (ensureAtlas + ensureCellBuffers + writeBuffer);
+  // the CPU prep cost is added by the caller. The output encode matches the fit space:
+  // gamma→gammaU8, linear→toU8 (gated cells were already encoded per space in prep).
+  async matchPrepped(
+    prepped: Prepped, atlas: Atlas, opts: GpuMatchOpts, cols: number, rows: number,
+  ): Promise<GpuMatchResult> {
     if (this.lost) throw new Error('gpu-matcher: device lost');
-    const { cellW, cellH } = atlas;
     const P = atlas.P;
     assertPWithinScratch(P); // P > 256 OOBs the workgroup scratch — throw so pipeline routes this atlas to the CPU pool.
     const G = atlas.glyphs.length;
     const numCells = cols * rows;
-    const w = lin.w, h = lin.h;
-    if (w !== cols * cellW || h !== rows * cellH) throw new Error('gpu-matcher: image does not match grid footprint');
+    const { targetHost, cstatHost, gated, gatedCount } = prepped;
+    // Buffer-size contract: the GPU buffers are sized numCells·3·P / numCells·16 by ensureCellBuffers,
+    // so a mis-sized prepped block (e.g. a stale ping-pong buffer) would drop the tail write silently
+    // on a real device. Assert loudly instead.
+    if (targetHost.length !== numCells * 3 * P) throw new Error('gpu-matcher: targetHost length != numCells·3·P');
+    if (cstatHost.length !== numCells * 16) throw new Error('gpu-matcher: cstatHost length != numCells·16');
+    const encode = opts.space === 'gamma' ? gammaU8 : toU8;
 
     const tPrep = performance.now();
     this.ensureAtlas(atlas);
     this.ensureCellBuffers(numCells, P);
-
-    // Working space applied to T BEFORE the scan (mirrors match.ts). gamma (default):
-    // linearToSrgb(v)/255; linear: identity. The output encode matches: gamma→gammaU8,
-    // linear→toU8.
-    const gamma = opts.space === 'gamma';
-    const n3 = w * h * 3;
-    if (!this.work || this.work.length !== n3) { this.work = new Float32Array(n3); }
-    const work = this.work;
-    if (gamma) { for (let i = 0; i < n3; i++) work[i] = linearToSrgb(lin.data[i]!) / 255; }
-    else { work.set(lin.data); }
-    const encode = gamma ? gammaU8 : toU8;
-
-    // Per-cell stats. Lean inline pass that packs the target patch straight into the upload
-    // buffer and accumulates ST/STT/minT/maxT in cellStats' EXACT (ly,lx,c) order — so the
-    // uploaded T and the gate scalar are byte-identical to src/core/match.ts (Q3 needs none of
-    // cellStats' gradient/luma work, and this avoids 5300 per-cell array allocations). eacScale
-    // + gate + gated-cell emit stay on the CPU (byte-identical to matchGrid).
-    // F2R-1: each reused host-scratch array MUST size on its OWN dimension. cstatHost is
-    // numCells·16; targetHost is numCells·3·P. Piggybacking cstatHost on targetHost's condition
-    // is a latent silent bug — a (numCells, P) change that holds numCells·3·P constant (e.g.
-    // numCells 100↔200 with P 64↔32) leaves targetHost's length unchanged, so cstatHost never
-    // reallocates: on a numCells INCREASE the tail-cell stat writes fall past cstatHost's end
-    // (silently dropped by JS typed arrays) and upload as zeros → wrong output with no throw
-    // (P ≤ 256, so no CPU-pool fallback). Independent conditions close the collision.
-    if (!this.targetHost || this.targetHost.length !== numCells * 3 * P) {
-      this.targetHost = new Float32Array(numCells * 3 * P);
-    }
-    if (!this.cstatHost || this.cstatHost.length !== numCells * 16) {
-      this.cstatHost = new Float32Array(numCells * 16);
-    }
-    const targetHost = this.targetHost;
-    const cstatHost = this.cstatHost!;
-    const gated: (GridCell | undefined)[] = new Array(numCells);
-    let gatedCount = 0;
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const cell = row * cols + col;
-        const tBase = cell * 3 * P;
-        const x0 = col * cellW, y0 = row * cellH;
-        // ST/STT accumulate in f32 via Math.fround — cellStats stores them in Float32Array,
-        // so each += rounds to f32; matching that keeps eacScale (hence the gate) byte-identical.
-        const fr = Math.fround;
-        let st0 = 0, st1 = 0, st2 = 0, stt0 = 0, stt1 = 0, stt2 = 0;
-        let mn0 = Infinity, mn1 = Infinity, mn2 = Infinity, mx0 = -Infinity, mx1 = -Infinity, mx2 = -Infinity;
-        for (let ly = 0; ly < cellH; ly++) {
-          const gy = y0 + ly;
-          for (let lx = 0; lx < cellW; lx++) {
-            const gidx = (gy * w + (x0 + lx)) * 3;
-            const li = ly * cellW + lx;
-            const v0 = work[gidx]!, v1 = work[gidx + 1]!, v2 = work[gidx + 2]!;
-            targetHost[tBase + li] = v0;
-            targetHost[tBase + P + li] = v1;
-            targetHost[tBase + 2 * P + li] = v2;
-            st0 = fr(st0 + v0); st1 = fr(st1 + v1); st2 = fr(st2 + v2);
-            stt0 = fr(stt0 + v0 * v0); stt1 = fr(stt1 + v1 * v1); stt2 = fr(stt2 + v2 * v2);
-            if (v0 < mn0) mn0 = v0; if (v0 > mx0) mx0 = v0;
-            if (v1 < mn1) mn1 = v1; if (v1 > mx1) mx1 = v1;
-            if (v2 < mn2) mn2 = v2; if (v2 > mx2) mx2 = v2;
-          }
-        }
-        // Centered per-channel AC energy STT_c = STT − ST²/P; eacScale = Σ_c STT_c (f64, exact).
-        const sttc0 = stt0 - (st0 * st0) / P;
-        const sttc1 = stt1 - (st1 * st1) / P;
-        const sttc2 = stt2 - (st2 * st2) / P;
-        const eac = sttc0 + sttc1 + sttc2;
-        const o = cell * 16;
-        cstatHost[o] = st0; cstatHost[o + 1] = st1; cstatHost[o + 2] = st2; cstatHost[o + 3] = eac;
-        cstatHost[o + 4] = sttc0; cstatHost[o + 5] = sttc1; cstatHost[o + 6] = sttc2;
-        cstatHost[o + 8] = mn0; cstatHost[o + 9] = mn1; cstatHost[o + 10] = mn2;
-        cstatHost[o + 12] = mx0; cstatHost[o + 13] = mx1; cstatHost[o + 14] = mx2;
-        if (eac / (3 * P) < opts.gateTau) {
-          gated[cell] = { ch: ' ', fg: null, bg: [encode(st0 / P), encode(st1 / P), encode(st2 / P)] };
-          gatedCount++;
-        }
-      }
-    }
 
     const dev = this.device;
     dev.queue.writeBuffer(this.targetBuf, 0, targetHost);
@@ -362,5 +300,46 @@ export class GpuMatcher {
     applyContrastFloor(cells, glyphOut, gated, targetHost, atlas, cols, rows, opts.space, opts.contrastFloor ?? 0);
 
     return { cells, matchMs, gpuMs, readbackMs, prepMs, gatedCount };
+  }
+
+  // Run the Q3 match from the grid-footprint linear reference. Thin wrapper kept for
+  // parity-page.ts (and the F2R-1 cstat unit test): it builds the working-space image and runs
+  // the per-cell prep on the main thread — via prep.ts scanCells, byte-identical to the
+  // relocated worker path — then delegates the GPU work to matchPrepped. The production web path
+  // relocates prep to a worker (SPEC §4.5) and calls matchPrepped directly. `lin` is the
+  // grid-footprint linear reference (w == cols*cellW, h == rows*cellH).
+  async match(lin: LinearImage, atlas: Atlas, opts: GpuMatchOpts, cols: number, rows: number): Promise<GpuMatchResult> {
+    if (this.lost) throw new Error('gpu-matcher: device lost');
+    const { cellW, cellH } = atlas;
+    const P = atlas.P;
+    assertPWithinScratch(P); // P > 256 OOBs the workgroup scratch — throw so pipeline routes this atlas to the CPU pool.
+    const numCells = cols * rows;
+    const w = lin.w, h = lin.h;
+    if (w !== cols * cellW || h !== rows * cellH) throw new Error('gpu-matcher: image does not match grid footprint');
+
+    const tCpu = performance.now();
+    // Working space applied to T BEFORE the scan (mirrors match.ts / prep.ts). gamma (default):
+    // linearToSrgb(v)/255; linear: identity. Reuses this.work to avoid per-run reallocation.
+    const gamma = opts.space === 'gamma';
+    const n3 = w * h * 3;
+    if (!this.work || this.work.length !== n3) { this.work = new Float32Array(n3); }
+    const work = this.work;
+    if (gamma) { for (let i = 0; i < n3; i++) work[i] = linearToSrgb(lin.data[i]!) / 255; }
+    else { work.set(lin.data); }
+
+    // Per-cell prep via the shared scan. F2R-1: pass this.targetHost/this.cstatHost as scratch —
+    // scanCells reallocs each on its OWN dimension — and store the returned arrays back so the
+    // reuse (and the independent-realloc semantics) persist across calls exactly as before the split.
+    const prepped = scanCells(
+      work, w,
+      { cols, rows, cellW, cellH, P, space: opts.space, gateTau: opts.gateTau },
+      { targetHost: this.targetHost ?? undefined, cstatHost: this.cstatHost ?? undefined },
+    );
+    this.targetHost = prepped.targetHost;
+    this.cstatHost = prepped.cstatHost;
+    const cpuPrepMs = performance.now() - tCpu;
+
+    const res = await this.matchPrepped(prepped, atlas, opts, cols, rows);
+    return { ...res, prepMs: res.prepMs + cpuPrepMs };
   }
 }
