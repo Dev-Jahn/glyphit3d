@@ -6,6 +6,26 @@
 하네스 채택(2026-07-07) 이전의 이력 — M0~M3, Round P — 은 소급 기록하지 않는다:
 git 히스토리와 `docs/M0~M3-SPEC·RESULTS.md`, `docs/ROUND-P-SPEC.md`가 그 소재다.
 
+## 2026-07-10-frontier-sweep
+
+- **Goal**: 사용자 지시 "남은 작업 전부 병렬로 완료까지" — registry 잔여 태스크 전면 소진. wave-1 6 lanes(격리 worktree ∥ opus 구현 → clean 적대 리뷰(fable=수학/코어) → 수정) + wave-2 chains(GPU 래스터→temporal ∥ 미학 피벗) → main 직렬 통합(작업 단위 커밋, 매 통합 전 게이트 green). 15 commits (9a20027..f8d033d).
+- **Shipped** (18 done):
+  - fix/rematch-single-flight-gpu-race — 모든 rematch 진입점을 coalescer 단일 큐로(F1R-1); fix/gpu-matcher-cstat-host-realloc — cstatHost 독립 재할당+충돌쌍 회귀(F2R-1)
+  - docs/metric-redesign — CAS 셀-AC 구조 headline(ADR-0002, DESIGN §10): SSIM 대비 5.3~5.9× 해상, 물체 마스크 극성 blocker 리뷰 발견→수정
+  - feat/palette-constrained-color — theme16 전수 정확해 + palette-256 project-then-refine(리뷰 major 2 수정)
+  - feat/contrast-floor-fill — 제약 refit(gamut-constrained DC re-solve) + GPU per-cell post-pass(CPU와 cell 동일 증명); 데모 642→0 invisible cells, 재구성 비용 −0.0033 정직 공표
+  - perf/gpu-rasterizer — 래스터→WebGPU + prep→worker(스펙 프로브가 OQ1 전제 반증: main-thread 블록 2개); maxGap 93→11-20ms, 드래그 4.5→12.9-14.3 updates/s; raster parity 13/13
+  - feat/temporal-animation — delta frames+hysteresis 엔진: 불변식 byte-identity 122/122, hysteresis 위반 0, speedup 1.31×, npm run temporal EXIT 0. H-T 가설은 UNTESTED(계측 부재 정직 기록)
+  - feat/ascii-identity-selection + feat/shape-color-coupling — ASCII-identity opt-in preset(ADR-0003): readability 0.067→0.810, full-block 0.920→0.177; **사전등록 재구성 가드레일 blocks에서 파괴(SSIM 0.079<0.758) — 정직 공표, spike/identity-guardrail-retune 등록**; 기본값 OFF byte-identity 이중 증명
+  - fix/rematch-promise-completion · fix/torn-runparams-snapshot · fix/contrast-floor-linear-space · fix/palette-q0-guard · chore/vitest-worktree-exclude · chore/compose-hero-canvas-types(tsc 완전 clean) · docs/profile-payload-external-contract · docs/contrast-floor-design-amendment(ADR-0003, DESIGN §3.4/§6)
+  - decision/public-repo-toggle — 룰링: public 전환+Pages (클로즈 직후 실행)
+- **Gates**: vitest 330/330 · parity 28/28+raster 13/13 · e2e 9/9(check-7 강화: maxGap<50, matcher='gpu' 단언) · npm run temporal EXIT 0(전 계약 MET) · tsc 0 errors · chafa-gate 0.9835/0.9812 PASS 불변 · build OK. 근거: 커밋 메시지 + docs/TEMPORAL-RESULTS.md + bench/out/identity-report.md(재현: npx tsx bench/identity-report.ts).
+- **SSOT**: changed §10(CAS headline), §3.4(contrastFloor), §6(ASCII-identity); ADR-0002·ADR-0003 ratified.
+- **Decisions pending**: none.
+- **Review**: requested (docs/reviews/2026-07-10-frontier-sweep-request.md)
+- **Next**: ① 사용자 블라인드 A/B 판정(sealed key, 아티팩트 ~/.claude/projects/.../identity-ab/) ② spike/identity-guardrail-retune ③ feat/temporal-interactive-wiring + chore/temporal-churn-sweep-instrument(→ H-T 판정 → §4.9 비준/개정) ④ perf/fix minors (wgsl-resident-prep, prep-buffer-pool, p256 fallback, orbit rewind, oracle f32 boundary, forceKeyframe race).
+- **특기(프로세스)**: 세션 리밋 3회 중단→resumeFromRunId 캐시 재개로 전량 복구; tmp 정리 사고로 스펙 3종 소실→wave-1 journal에서 바이트 동일 복원(에이전트들이 스펙 부재 시 작업 거부 — golden rule 준수 실증); 매 lane 리뷰가 blocker 1·major 9+ 발견(gate green ≠ correct 재확인).
+
 ## 2026-07-07-review-fixes
 
 - **Goal**: gpu-reality 외부 리뷰(gpt-5.5-pro) 지적 7건 근본 수정. F3는 ADR-0001(Contract B) 룰링 반영.

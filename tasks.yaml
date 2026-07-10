@@ -25,32 +25,38 @@ tasks:
     notes: "ADR-0000"
     round: "2026-07-07-adopt-harness"
   - id: docs/metric-redesign
+    round: 2026-07-10-frontier-sweep
     title: "재구성 지표 재설계: SSIM 포화 → 셀 스케일 고주파 AC 구조 지표 + 물체 마스크 + 분포(하위 percentile) 보고, SSIM은 가드레일로 강등"
-    status: "pending"
+    status: done
     anchor: "DESIGN §10"
     origin: "사용자 피드백 2026-07-06"
   - id: feat/ascii-identity-selection
+    round: 2026-07-10-frontier-sweep
     title: "구조 인지 문자 선택: 균일/밝은 영역엔 면적 큰 문자, 미묘한 gradient엔 조절된 작은 문자"
-    status: "blocked"
+    status: done
     deps: ["docs/metric-redesign"]
     anchor: "DESIGN §6"
     origin: "사용자 피드백 2026-07-06"
   - id: feat/contrast-floor-fill
+    round: 2026-07-10-frontier-sweep
     title: "어두운 영역 검은 구멍 잔여분: fitted-path invisibility(검정 위 dim fg) 대비 하한 제약"
-    status: "pending"
+    status: done
     anchor: "DESIGN §3"
     origin: "사용자 피드백 2026-07-06"
     notes: "Round P가 gate 성분 수정; fitted 성분이 3D 데모 주성분"
   - id: feat/shape-color-coupling
+    round: 2026-07-10-frontier-sweep
     title: "형태-색상 coupling: 셀 사각영역 전체 광량/조도 반영해 문자색 명도·채도 조절"
-    status: "blocked"
+    status: done
     deps: ["docs/metric-redesign"]
     anchor: "DESIGN §6"
     origin: "사용자 피드백 2026-07-06"
   - id: decision/public-repo-toggle
+    round: 2026-07-10-frontier-sweep
+    ruling: "전환한다(사용자, 2026-07-07): 라운드 완료·전체 게이트 green 후 public 전환 + Pages 배포 확인. 본 라운드 클로즈 직후 실행."
     notes: "사용자 결정 2026-07-07: 이번 라운드(frontier 일괄 처리) 완료·전체 게이트 green 후 public 전환 + Pages 배포 확인까지 실행. 결정 확정, 실행만 라운드 클로즈 시점."
     title: "private→public 전환 여부 (전환 시 Pages 웹 데모 자동 배포)"
-    status: "pending"
+    status: done
     origin: "프로젝트 상태"
   - id: perf/webgpu-matcher
     round: 2026-07-07-gpu-reality
@@ -59,15 +65,17 @@ tasks:
     anchor: "DESIGN §7"
     notes: "WebGPU는 이 머신 headless Chromium(secure context)에서 Blackwell GPU로 검증됨 — 이전 blocked 사유(GPU 부재)는 오진; 실사용자 브라우저도 WebGPU 지원. 옛 M2.5"
   - id: feat/palette-constrained-color
+    round: 2026-07-10-frontier-sweep
     title: "palette-256/theme16 제약 색 모드 (디더 배리어·M1 prior 활동 공간)"
-    status: "pending"
+    status: done
     anchor: "DESIGN §6"
     notes: "미구현; Round A와 합류 가능"
   - id: feat/temporal-animation
+    round: 2026-07-10-frontier-sweep
     title: "temporal/애니메이션: motion-vector hysteresis, delta frames"
-    status: "pending"
+    status: done
     anchor: "DESIGN §4"
-    notes: "was M4; §4.3 잔여 가설 마지막 시험대"
+    notes: "메커니즘 출하+계약 검증(불변식 122/122 byte-identity, hysteresis 규칙 위반 0, drift 0, speedup 1.31×, npm run temporal EXIT 0). v1 한계는 전부 등록: identity reprojection(feat/motion-vector-reprojection), 인터랙티브 배선 별도(feat/temporal-interactive-wiring), H-T 가설 UNTESTED(chore/temporal-churn-sweep-instrument 전까지 §4.9 비준 보류)"
   - id: chore/e2e-gpu-rendering
     round: 2026-07-07-gpu-reality
     title: "e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변)"
@@ -75,9 +83,10 @@ tasks:
     anchor: "DESIGN §10"
     origin: "GPU 오진 정정 2026-07-07"
   - id: perf/gpu-rasterizer
+    round: 2026-07-10-frontier-sweep
     notes: "OQ1(re-review): raster를 GPU로 옮길 때 e2e check-7의 loose maxGap<250 ceiling도 실제 frame-budget(~50ms long-task)로 조이고 'interactive smooth' 문구 검증. 현재 check는 '한 덩어리 main-thread block 아님'만 보증"
     title: "GPU 경로의 메인스레드 CPU 래스터(~96ms)를 GPU로 — WebGPU 매처 후 남은 인터랙티브 병목"
-    status: "pending"
+    status: done
     deps: ["perf/webgpu-matcher"]
     anchor: "DESIGN §7"
     origin: "gpu-reality 라운드 후속"
@@ -134,8 +143,9 @@ tasks:
     anchor: "§5.4"
     origin: "review-2026-07-07-gpu-reality"
   - id: chore/compose-hero-canvas-types
+    round: 2026-07-10-frontier-sweep
     title: "기존 tsc 실패: scripts/compose-hero.ts가 @napi-rs/canvas SvgCanvas vs Canvas 타입 불일치(37:3 TS2741, 61:17 TS2345) — 이번 라운드 무관, 릴리스 스크립트, HEAD부터 존재"
-    status: "pending"
+    status: done
     severity: "minor"
     origin: "gate-2026-07-07-review-fixes"
   - id: chore/braille-charset-noop
@@ -145,44 +155,99 @@ tasks:
     severity: "minor"
     origin: "gate-2026-07-07-review-fixes"
   - id: fix/rematch-single-flight-gpu-race
+    round: 2026-07-10-frontier-sweep
     title: "모든 rematch(control/ladder/orbit)를 단일 큐로 직렬화 — 공유 GpuMatcher staging buffer의 host map-state 경합 차단(F1R-1). seq 가드는 stale commit만 막고 동시 gpu.match() 재진입은 못 막아 최신 run wrong-frame/noisy CPU fallback 발생"
-    status: "done"
+    status: done
     severity: "major"
     origin: "review-2026-07-07-review-fixes"
     notes: "F1R-1 re-review; extends done fix/rematch-single-flight (commit-only guard). Pre-existing shared-instance race. Smallest fix: route __app.rematch through requestRematch coalescing loop"
   - id: fix/gpu-matcher-cstat-host-realloc
+    round: 2026-07-10-frontier-sweep
     title: "gpu-matcher: cstatHost를 자체 numCells*16 조건으로 재할당(현재 targetHost.length==numCells*3*P 단일 조건에 편승, F2R-1) — numCells*P 동률·numCells 증가 시 cstatHost stale→tail셀 stats 0→P≤256라 fallback 없이 silent 오출력. 충돌쌍 host-scratch 단위테스트 추가"
-    status: "done"
+    status: done
     severity: "major"
     origin: "review-2026-07-07-review-fixes"
     notes: "F2R-1 re-review; extends done fix/gpu-matcher-p-guard. gpu-matcher.ts:213-216. one-directional silent (numCells 증가), 감소는 throw→fallback"
   - id: docs/profile-payload-external-contract
+    round: 2026-07-10-frontier-sweep
     title: "OQ2: F3 Contract B canonical payload는 외부 profile generator에 강한 계약 — 브라우저 'TTF로 프로파일 생성' 도구 착수 시 buildCanonicalPayload를 공유 lib로 노출하거나 독립 구현은 profile version bump 강제"
-    status: "pending"
+    status: done
     severity: "minor"
     anchor: "§5.4"
     origin: "review-2026-07-07-review-fixes"
     notes: "forward constraint for future browser TTF profiling; from re-review OQ2"
   - id: fix/rematch-promise-completion
+    round: 2026-07-10-frontier-sweep
     title: "__app.rematch() promise가 coalesce되면 실제 작업 완료 전에 resolve — 공개 Playwright/UI surface의 완료 의미 변경(wave1 리뷰 minor)"
-    status: "pending"
+    status: done
     severity: "minor"
   - id: fix/torn-runparams-snapshot
+    round: 2026-07-10-frontier-sweep
     title: "torn runParams snapshot: ensureAtlas await 후 params 재읽기로 old-charset atlas + new params가 한 commit에 페어링될 수 있음(선재 결함, wave1 리뷰 발견)"
-    status: "pending"
+    status: done
     severity: "minor"
   - id: fix/contrast-floor-linear-space
+    round: 2026-07-10-frontier-sweep
     title: "contrastFloor: fit-space floor가 linear mode raster-space 가시성과 미페어링 + #space=linear에서 demo floor=0.06 유지(wave1 리뷰 minor)"
-    status: "pending"
+    status: done
     severity: "minor"
   - id: docs/contrast-floor-design-amendment
+    round: 2026-07-10-frontier-sweep
     title: "DESIGN §3.4 개정: contrastFloor를 collapseThreshold 옆 새 opt-in 미학 knob으로 정식 등재(boost-or-demote 의미론, 재구성 비용 −0.0054 실측 포함)"
-    status: "pending"
+    status: done
   - id: fix/palette-q0-guard
+    round: 2026-07-10-frontier-sweep
+    notes: "확장: --palette-k가 --palette 없이 단독 지정될 때도 조용한 no-op(정상 truecolor 렌더, exit 0) — q0 guard와 함께 경고/거부로 통일할 것 (palette 통합 스모크에서 확인)"
     title: "--quality 0 + --palette 조합이 palette를 조용히 무시(rampGrid 경로 guard 우회) — 명시적 거부/경고로(wave1 리뷰 minor)"
-    status: "pending"
+    status: done
     severity: "minor"
   - id: chore/vitest-worktree-exclude
+    round: 2026-07-10-frontier-sweep
     title: "vitest가 .claude/worktrees 하위 중첩 repo 사본까지 수집(기본 include가 root-anchored exclude 우회) — **/.claude/** exclude 추가"
-    status: "done"
+    status: done
+    severity: "minor"
+  - id: perf/wgsl-resident-prep
+    title: "raster spec §4.4에서 의도적 연기된 full-GPU-residency prep(WGSL 상주) — 현재는 worker prep+writeBuffer; 남은 main-thread 잔여 ~12ms를 더 줄일 때만"
+    status: "pending"
+  - id: fix/p256-q3-fallback-double-render
+    title: "P>256 Q3 fallback이 rematch마다 render+worker-prep+re-render 이중 비용(늦은 assert; prepQ3가 imgData를 detach해 catch에서 재렌더) — 조기 capability check로(chainA 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: perf/prep-buffer-pool
+    title: "prepQ3가 요청마다 12MB work 이미지(비인터랙티브시 +12MB lin) 신규 할당 — targetHost/cstatHost만 핑퐁; work/lin도 풀링(chainA 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: fix/orbit-pose-snapshot-rewind
+    title: "snapshot-pose setOrbit이 charset 변경 await 사이 라이브 orbit drag를 되감을 수 있음(baseline 대비 동작 변화, chainA 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: spike/identity-guardrail-retune
+    title: "identity preset이 사전등록 가드레일 파괴(blocks: SSIM 0.079 vs 하한 0.758, CAS p10 0.012 vs 0.092; ascii는 Q2+A PASS) — 스펙 §6.4 새 라운드 트리거: λ/τ/coupling 재조율 또는 ADR로 하한 개정. blocks-crater vs ascii-stable 비대칭이 단서"
+    status: "pending"
+    severity: "major"
+  - id: chore/identity-prediction-instruments
+    title: "사전등록 예측 12건 중 6건 미측정(P2 uniform-only corr, P6 median-over-unclamped, P8 working-ΔL near-floor, P3 locality, P11 perf) + 가드레일 풀링이 8-context(사전등록은 6-image mean) — proxies 하네스 확장/정합(chainB 리뷰)"
+    status: "pending"
+    severity: "minor"
+  - id: fix/contrast-floor-linear-exactness
+    title: "linear-space floor가 1차 근사(scalar-slope rescale): dark/sparse 극단에서 표시 대비가 floor를 최대 ~3.4u8(14%) 미달 — 필요시 display-side 정확 평가로(chainB 리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: feat/temporal-interactive-wiring
+    title: "temporal delta+hyst를 인터랙티브 파이프라인에 실배선 — worker prepQ3 경로 위 temporal core 재유도 + GpuRaster 변경셀 부분 업로드 + 인터랙티브 temporal e2e(하네스 확장 필요). 현 GpuTemporal 래퍼 재사용 불가(자체 GpuMatcher+main-thread prep이라 ~90ms 블록 재유입)"
+    status: "pending"
+    severity: "major"
+  - id: feat/motion-vector-reprojection
+    title: "진짜 motion-vector reprojection(렌더러 velocity AOV) — v1은 identity reprojection(spec §2: MV 미획득), oracle은 reprojection-aware라 수용. spec §11 follow-up"
+    status: "pending"
+  - id: chore/temporal-churn-sweep-instrument
+    title: "δ-sweep churn/revert/ΔSSIM 계측 하네스 — H-T 가설(§4.3 잔재 최종 시험)은 현재 UNTESTED: P-hysteresis MET은 규칙 정확성일 뿐 안정성-비용 tradeoff 검증이 아님(P8/P9 사전등록 기준). TEMPORAL-RESULTS P9가 참조하는 그 task"
+    status: "pending"
+  - id: fix/temporal-oracle-f32-boundary
+    title: "GPU hysteresis 결정(f32) vs 동결 oracle(f64) 경계 불일치 — near-tie carve-out 부재로 P-hysteresis verdict가 flaky하게 뒤집힐 수 있음(리뷰 minor)"
+    status: "pending"
+    severity: "minor"
+  - id: fix/temporal-force-keyframe-race
+    title: "main.ts forceKeyframe lost-update race: mid-flight에 armed된 reset(model drop/setTemporal)이 in-flight run commit에 무조건 덮여 소실 가능(리뷰 minor)"
+    status: "pending"
     severity: "minor"
