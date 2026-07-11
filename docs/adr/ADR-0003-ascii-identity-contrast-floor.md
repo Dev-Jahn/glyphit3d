@@ -115,10 +115,14 @@ ADR-0002 §5 프로토콜(고정-bg regime + 사전등록 블라인드 A/B + 양
   λ/τ/coupling 재조율 또는 ADR로 하한 개정. **register: spike/identity-guardrail-retune**
   (major). 지금 하한을 완화(soften)하지 않는다 — 그것이야말로 프록시 게이밍을 막는 가드레일의
   존재 이유다.
-- **최종 수용 기준은 사용자의 블라인드 A/B로 남는다**(목적이 미학이므로 — ADR-0002 §5의 1차
-  판정). 산출물은 봉인됐다(scripts/identity-ab.ts): 정답 키는 평문이 아니라
-  **sha256 commitment `ccfb2c125327515e30fd0a1e5923837cd4aa5dabed12b626e87969034804c265`**
-  로 커밋됐고, 판정 후 디코드해 검증 가능하다.
+- **최종 수용은 사용자 직접 판정으로 확정**(목적이 미학이므로). **2026-07-11 사용자 판정**:
+  pair-00(sphere)에서 feature 쪽을 선호 — 미학 방향은 옳음. 단 **charset 비일관성(블록·선문자·
+  산발 glyph 혼재로 산만)이 blocker** → **ascii-first 일관성**이 우선(web demo ascii 모드가 최우선
+  타겟, block은 옵션 유지), coupling의 색 dithering은 별도 on/off toggle로 노출. 후속 등록:
+  `feat/identity-ascii-charset-coherence`, `feat/color-dither-toggle`.
+- **봉인/블라인드 A/B 장치는 오버엔지니어링으로 폐기**(scripts/identity-ab.ts 삭제 — 사용자 지시
+  2026-07-11). sha256 commitment·blind seed 형식주의는 솔로 프로젝트에 불요이며, 외부 리뷰(F5)도
+  그 봉인이 base64+공개 seed라 실질 blinding이 아님을 지적했다. 미학 판정은 사용자 육안으로 충분.
 
 **재현 명령**:
 
@@ -134,7 +138,7 @@ npx tsx bench/chafa-gate.ts --floor 0.06        # floor ON 재구성 비용(mean
   으로 등재(boost-or-demote 의미론 1문단 + 측정 비용 −0.0033 + 본 ADR 상호참조). §3.4의 M3
   전역-floor 경고는 그대로 유지 — 이 knob이 그 경고의 명시적-제약 답임을 명시.
 - **DESIGN §6 개정**: **ASCII-identity 모드** 항목을 Q 사다리 옆에 추가(opt-in preset, 미학
-  목적 함수, ADR-0002 §5 프로토콜 + 블라인드 A/B로 평가, 가드레일 상태 정직 기재) + 본 ADR
+  목적 함수, ADR-0002 §5 프록시/가드레일 + 사용자 직접 판정으로 평가, 가드레일 상태 정직 기재) + 본 ADR
   상호참조.
 - **§3.2/§3.3 불변**: 닫힌 형태 피팅과 DC/AC 따름정리·selection-prior 일반화 서술은 개정하지
   않는다. contrastFloor는 자유 fit에 **명시 제약을 추가**해 optimum에서 의도적으로 벗어나는

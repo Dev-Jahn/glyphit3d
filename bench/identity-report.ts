@@ -265,7 +265,7 @@ async function main(): Promise<void> {
   L.push('');
   L.push(`DejaVu Sans Mono @ ${FONT_SIZE}px · ${COLS} cols · ${IMAGES.length} bench images + ${aovPresent.length} AOV bake(s) · contestants: ${contestants().map((c) => c.label.split(' ')[0]).join(', ')}`);
   L.push('');
-  L.push('Proxies measure the ASCII-identity OBJECTIVE (visible character glyphs), explicitly different from reconstruction and in explicit trade-off with invisible-ink. Guardrails are reconstruction FLOORS relative to the same-run baseline. Acceptance (ADR-0002 §5) = blind A/B majority ∧ proxy improves by pre-registered margin ∧ SSIM+CAS floors held.');
+  L.push('Proxies measure the ASCII-identity OBJECTIVE (visible character glyphs), explicitly different from reconstruction and in explicit trade-off with invisible-ink. Guardrails are reconstruction FLOORS relative to the same-run baseline. Acceptance (ADR-0002 §5) = user visual preference ∧ proxy improves by pre-registered margin ∧ SSIM+CAS floors held.');
   L.push('');
   if (aovMissing.length) {
     L.push(`> **AOV note:** ${aovMissing.join(', ')} bake(s) absent (no bench/aov/<name>/shaded.png). Run \`npx tsx scripts/bake-aov.ts bench/zoo/<name>/<name>.gltf --cols ${COLS}\` to produce them; those columns are omitted until present.`);

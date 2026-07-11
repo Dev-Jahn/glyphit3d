@@ -23,7 +23,7 @@ git 히스토리와 `docs/M0~M3-SPEC·RESULTS.md`, `docs/ROUND-P-SPEC.md`가 그
 - **SSOT**: changed §10(CAS headline), §3.4(contrastFloor), §6(ASCII-identity); ADR-0002·ADR-0003 ratified.
 - **Decisions pending**: none.
 - **Review**: requested (docs/reviews/2026-07-10-frontier-sweep-request.md)
-- **Next**: ① 사용자 블라인드 A/B 판정(sealed key, 아티팩트 ~/.claude/projects/.../identity-ab/) ② spike/identity-guardrail-retune ③ feat/temporal-interactive-wiring + chore/temporal-churn-sweep-instrument(→ H-T 판정 → §4.9 비준/개정) ④ perf/fix minors (wgsl-resident-prep, prep-buffer-pool, p256 fallback, orbit rewind, oracle f32 boundary, forceKeyframe race).
+- **Next**: (2026-07-11 사용자 판정으로 방향 확정 — 블라인드 A/B 장치 폐기, ADR-0003 §3 참조) ① feat/identity-ascii-charset-coherence(charset 산만함 해소, ascii-first — 최우선) ② feat/color-dither-toggle ③ 리뷰 major 수정(bake-identity-aov-wiring, palette-floor-guard, model-drop-latest-wins, cas-multiplier-claim) ④ feat/temporal-interactive-wiring + churn-sweep-instrument.
 - **특기(프로세스)**: 세션 리밋 3회 중단→resumeFromRunId 캐시 재개로 전량 복구; tmp 정리 사고로 스펙 3종 소실→wave-1 journal에서 바이트 동일 복원(에이전트들이 스펙 부재 시 작업 거부 — golden rule 준수 실증); 매 lane 리뷰가 blocker 1·major 9+ 발견(gate green ≠ correct 재확인).
 
 ## 2026-07-07-review-fixes

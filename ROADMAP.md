@@ -2,7 +2,7 @@
      Source of truth: tasks.yaml. Regenerated automatically on tasks.yaml edits. -->
 # Roadmap — glyphit3d
 
-**Progress:** 29/49 done · 0 active · 0 blocked · generated 2026-07-11 02:07 UTC @ `f168a27`
+**Progress:** 29/51 done · 0 active · 0 blocked · generated 2026-07-11 06:54 UTC @ `87ed77c`
 
 ```mermaid
 flowchart TD
@@ -56,6 +56,8 @@ flowchart TD
         fix_cas_multiplier_claim["<b>fix/cas-multiplier-claim</b><br/>CAS 'SSIM 대비 5.3–5.9× 해상'<br/>배수 주장은 척도 단위 종속(CAS affine<br/>재표기만으로 절반): 배수 표현<br/>철회(ADR-0002 표·prose,<br/>PROGRESS, structure-report<br/>'× vs SSIM' 열·prose) — 정성적<br/>SSIM-포화 주장은 독립 근거로 유지, 정량<br/>비교는 scale-invariant effect<br/>size로 대체"]
         decision_readability_proxy_luma["<b>decision/readability-proxy-luma</b><br/>readability proxy(max-<br/>channel sRGB≥24)와 contrast<br/>floor(Rec.709 display-<br/>luma)의 가시성 정의 불일치 — 검정<br/>bg에서 fg=[0,0,24]는 proxy<br/>readable이나 luma Δ≈2.2u8로<br/>사실상 비가시: ①display-luma로 통일<br/>②색차 모델 도입 ③proxy를 좁게 개명 중<br/>ruling 필요(headline<br/>0.067→0.810에 영향 가능)"]
         decision_ssim_badge_semantics["<b>decision/ssim-badge-semantics</b><br/>production SSIM badge가 GPU<br/>표시 픽셀(rr.data)이 아닌 CPU<br/>canonical 재래스터를 채점 — 'grid<br/>reconstruction SSIM'으로 표기<br/>유지 vs displayed-output<br/>SSIM으로 변경 vs 저빈도 GPU-<br/>raster 샘플링 검증 추가 중<br/>ruling(GPU↔CPU 픽셀 갭은 현재<br/>오프라인 parity 하네스만 봉인)"]
+        feat_identity_ascii_charset_coherence["<b>feat/identity-ascii-charset-coherence</b><br/>ASCII-identity 미학의 charset<br/>비일관성 해소 — 현재 출력은 블록·선문자·산발<br/>glyph 혼재로 산만(사용자<br/>2026-07-11 pair-00 판정):<br/>일관된 ascii ramp 우선(web demo<br/>ascii 모드가 최우선 타겟), block은<br/>옵션으로 유지. 단서: ascii는 재구성<br/>가드레일 안정·blocks는 크레이터라는<br/>비대칭(구 spike/identity-<br/>guardrail-retune)"]
+        feat_color_dither_toggle["<b>feat/color-dither-toggle</b><br/>coupling의 색 dithering 효과를<br/>on/off toggle 옵션으로 노출(사용자<br/>선호 — pair-00 feature 쪽<br/>선호): CLI --identity 및 web<br/>demo 양쪽에서 켜고 끌 수 있게"]
     end
     docs_metric_redesign --> feat_ascii_identity_selection
     docs_metric_redesign --> feat_shape_color_coupling
@@ -67,24 +69,24 @@ flowchart TD
     classDef done fill:#c8e6c9,stroke:#2e7d32,color:#1b4332
     classDef dropped fill:#eeeeee,stroke:#bdbdbd,color:#9e9e9e,stroke-dasharray: 4 4
     class chore_adopt_jahns_workflow,docs_metric_redesign,feat_ascii_identity_selection,feat_contrast_floor_fill,feat_shape_color_coupling,decision_public_repo_toggle,perf_webgpu_matcher,feat_palette_constrained_color,feat_temporal_animation,chore_e2e_gpu_rendering,perf_gpu_rasterizer,fix_rematch_single_flight,fix_gpu_matcher_p_guard,decision_profile_stats_objective_contract,docs_wgsl_mirror_kahan_comment,fix_e2e_liveness_frame_budget,docs_gpu_realtime_wording,chore_parity_adversarial_fixtures,fix_profile_hash_canonical,chore_compose_hero_canvas_types,fix_rematch_single_flight_gpu_race,fix_gpu_matcher_cstat_host_realloc,docs_profile_payload_external_contract,fix_rematch_promise_completion,fix_torn_runparams_snapshot,fix_contrast_floor_linear_space,docs_contrast_floor_design_amendment,fix_palette_q0_guard,chore_vitest_worktree_exclude done
-    class chore_braille_charset_noop dropped
-    class perf_wgsl_resident_prep,fix_p256_q3_fallback_double_render,perf_prep_buffer_pool,fix_orbit_pose_snapshot_rewind,spike_identity_guardrail_retune,chore_identity_prediction_instruments,fix_contrast_floor_linear_exactness,feat_temporal_interactive_wiring,feat_motion_vector_reprojection,chore_temporal_churn_sweep_instrument,fix_temporal_oracle_f32_boundary,fix_temporal_force_keyframe_race,fix_bake_identity_aov_wiring,fix_palette_floor_guard,fix_model_drop_latest_wins,fix_identity_ab_blinding_protocol,fix_cas_multiplier_claim,decision_readability_proxy_luma,decision_ssim_badge_semantics pending
+    class chore_braille_charset_noop,spike_identity_guardrail_retune,chore_identity_prediction_instruments,fix_identity_ab_blinding_protocol dropped
+    class perf_wgsl_resident_prep,fix_p256_q3_fallback_double_render,perf_prep_buffer_pool,fix_orbit_pose_snapshot_rewind,fix_contrast_floor_linear_exactness,feat_temporal_interactive_wiring,feat_motion_vector_reprojection,chore_temporal_churn_sweep_instrument,fix_temporal_oracle_f32_boundary,fix_temporal_force_keyframe_race,fix_bake_identity_aov_wiring,fix_palette_floor_guard,fix_model_drop_latest_wins,fix_cas_multiplier_claim,decision_readability_proxy_luma,decision_ssim_badge_semantics,feat_identity_ascii_charset_coherence,feat_color_dither_toggle pending
 ```
 
 ## Tasks
 
 | ID | Title | Status | Round | Deps | Anchor |
 |---|---|---|---|---|---|
-| `chore/identity-prediction-instruments` | 사전등록 예측 12건 중 6건 미측정(P2 uniform-only corr, P6 median-over-unclamped, P8 working-ΔL near-floor, P3 locality, P11 perf) + 가드레일 풀링이 8-context(사전등록은 6-image mean) — proxies 하네스 확장/정합(chainB 리뷰) | ⬜ pending | — | — | — |
 | `chore/temporal-churn-sweep-instrument` | δ-sweep churn/revert/ΔSSIM 계측 하네스 — H-T 가설(§4.3 잔재 최종 시험)은 현재 UNTESTED: P-hysteresis MET은 규칙 정확성일 뿐 안정성-비용 tradeoff 검증이 아님(P8/P9 사전등록 기준). TEMPORAL-RESULTS P9가 참조하는 그 task | ⬜ pending | — | — | — |
 | `decision/readability-proxy-luma` | readability proxy(max-channel sRGB≥24)와 contrast floor(Rec.709 display-luma)의 가시성 정의 불일치 — 검정 bg에서 fg=[0,0,24]는 proxy readable이나 luma Δ≈2.2u8로 사실상 비가시: ①display-luma로 통일 ②색차 모델 도입 ③proxy를 좁게 개명 중 ruling 필요(headline 0.067→0.810에 영향 가능) | ⬜ pending | — | — | — |
 | `decision/ssim-badge-semantics` | production SSIM badge가 GPU 표시 픽셀(rr.data)이 아닌 CPU canonical 재래스터를 채점 — 'grid reconstruction SSIM'으로 표기 유지 vs displayed-output SSIM으로 변경 vs 저빈도 GPU-raster 샘플링 검증 추가 중 ruling(GPU↔CPU 픽셀 갭은 현재 오프라인 parity 하네스만 봉인) | ⬜ pending | — | — | — |
+| `feat/color-dither-toggle` | coupling의 색 dithering 효과를 on/off toggle 옵션으로 노출(사용자 선호 — pair-00 feature 쪽 선호): CLI --identity 및 web demo 양쪽에서 켜고 끌 수 있게 | ⬜ pending | — | — | ADR-0003 |
+| `feat/identity-ascii-charset-coherence` | ASCII-identity 미학의 charset 비일관성 해소 — 현재 출력은 블록·선문자·산발 glyph 혼재로 산만(사용자 2026-07-11 pair-00 판정): 일관된 ascii ramp 우선(web demo ascii 모드가 최우선 타겟), block은 옵션으로 유지. 단서: ascii는 재구성 가드레일 안정·blocks는 크레이터라는 비대칭(구 spike/identity-guardrail-retune) | ⬜ pending | — | — | ADR-0003 |
 | `feat/motion-vector-reprojection` | 진짜 motion-vector reprojection(렌더러 velocity AOV) — v1은 identity reprojection(spec §2: MV 미획득), oracle은 reprojection-aware라 수용. spec §11 follow-up | ⬜ pending | — | — | — |
 | `feat/temporal-interactive-wiring` | temporal delta+hyst를 인터랙티브 파이프라인에 실배선 — worker prepQ3 경로 위 temporal core 재유도 + GpuRaster 변경셀 부분 업로드 + 인터랙티브 temporal e2e(하네스 확장 필요). 현 GpuTemporal 래퍼 재사용 불가(자체 GpuMatcher+main-thread prep이라 ~90ms 블록 재유입) | ⬜ pending | — | — | — |
 | `fix/bake-identity-aov-wiring` | CLI bake --identity가 shading.png AOV를 coupling에 미배선(ℓ=Ȳ fallback으로 동작, ADR-0003 ℓ 계약 위반): cli.ts AOV 게이트 2곳(shadingLuma 로드·opts.aov 부착)에 opts.coupling 조건 추가 + CLI 경로 테스트 | ⬜ pending | — | — | ADR-0003 §2 |
 | `fix/cas-multiplier-claim` | CAS 'SSIM 대비 5.3–5.9× 해상' 배수 주장은 척도 단위 종속(CAS affine 재표기만으로 절반): 배수 표현 철회(ADR-0002 표·prose, PROGRESS, structure-report '× vs SSIM' 열·prose) — 정성적 SSIM-포화 주장은 독립 근거로 유지, 정량 비교는 scale-invariant effect size로 대체 | ⬜ pending | — | — | ADR-0002 |
 | `fix/contrast-floor-linear-exactness` | linear-space floor가 1차 근사(scalar-slope rescale): dark/sparse 극단에서 표시 대비가 floor를 최대 ~3.4u8(14%) 미달 — 필요시 display-side 정확 평가로(chainB 리뷰 minor) | ⬜ pending | — | — | — |
-| `fix/identity-ab-blinding-protocol` | 블라인드 A/B key가 봉인 아님(base64+공개 seed 0xDEADBEEF는 obfuscation일 뿐; sha256 commitment는 사후 변조 방지만 제공): ADR-0003 'sealed' 표현을 'committed'로 교정 + 강화 프로토콜(비밀 seed·key 분리 보관·verdict-before-reveal 커밋) | ⬜ pending | — | — | ADR-0003 |
 | `fix/model-drop-latest-wins` | 연속 모델 drop이 latest-wins 아님: Scene.loadGLB가 load/commit 미분리·세대 가드 없음이라 늦게 로드된 옛 모델이 setModel로 최종 상태를 덮어씀 — modelSeq 가드 + load/commit 분리 + revokeObjectURL 누수 수정 | ⬜ pending | — | — | — |
 | `fix/orbit-pose-snapshot-rewind` | snapshot-pose setOrbit이 charset 변경 await 사이 라이브 orbit drag를 되감을 수 있음(baseline 대비 동작 변화, chainA 리뷰 minor) | ⬜ pending | — | — | — |
 | `fix/p256-q3-fallback-double-render` | P>256 Q3 fallback이 rematch마다 render+worker-prep+re-render 이중 비용(늦은 assert; prepQ3가 imgData를 detach해 catch에서 재렌더) — 조기 capability check로(chainA 리뷰 minor) | ⬜ pending | — | — | — |
@@ -93,7 +95,6 @@ flowchart TD
 | `fix/temporal-oracle-f32-boundary` | GPU hysteresis 결정(f32) vs 동결 oracle(f64) 경계 불일치 — near-tie carve-out 부재로 P-hysteresis verdict가 flaky하게 뒤집힐 수 있음(리뷰 minor) | ⬜ pending | — | — | — |
 | `perf/prep-buffer-pool` | prepQ3가 요청마다 12MB work 이미지(비인터랙티브시 +12MB lin) 신규 할당 — targetHost/cstatHost만 핑퐁; work/lin도 풀링(chainA 리뷰 minor) | ⬜ pending | — | — | — |
 | `perf/wgsl-resident-prep` | raster spec §4.4에서 의도적 연기된 full-GPU-residency prep(WGSL 상주) — 현재는 worker prep+writeBuffer; 남은 main-thread 잔여 ~12ms를 더 줄일 때만 | ⬜ pending | — | — | — |
-| `spike/identity-guardrail-retune` | identity preset이 사전등록 가드레일 파괴(blocks: SSIM 0.079 vs 하한 0.758, CAS p10 0.012 vs 0.092; ascii는 Q2+A PASS) — 스펙 §6.4 새 라운드 트리거: λ/τ/coupling 재조율 또는 ADR로 하한 개정. blocks-crater vs ascii-stable 비대칭이 단서 | ⬜ pending | — | — | — |
 | `chore/adopt-jahns-workflow` | jahns-workflow 하네스 도입 (SSOT/tasks/packet 리뷰) | ✅ done | 2026-07-07-adopt-harness | — | — |
 | `chore/compose-hero-canvas-types` | 기존 tsc 실패: scripts/compose-hero.ts가 @napi-rs/canvas SvgCanvas vs Canvas 타입 불일치(37:3 TS2741, 61:17 TS2345) — 이번 라운드 무관, 릴리스 스크립트, HEAD부터 존재 | ✅ done | 2026-07-10-frontier-sweep | — | — |
 | `chore/e2e-gpu-rendering` | e2e/verify Chromium을 SwiftShader에서 --use-angle=vulkan으로 전환 (실 GPU 렌더, 실사용자 환경 대변) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §10 |
@@ -124,3 +125,6 @@ flowchart TD
 | `perf/gpu-rasterizer` | GPU 경로의 메인스레드 CPU 래스터(~96ms)를 GPU로 — WebGPU 매처 후 남은 인터랙티브 병목 | ✅ done | 2026-07-10-frontier-sweep | perf/webgpu-matcher | DESIGN §7 |
 | `perf/webgpu-matcher` | WebGPU WGSL matcher (근본 성능 개선) | ✅ done | 2026-07-07-gpu-reality | — | DESIGN §7 |
 | `chore/braille-charset-noop` | braille 문자셋이 blocks와 byte-identical 출력(동일 hash) — DejaVuSansMono에 braille glyph 부재로 필터링돼 UI의 braille 선택이 사실상 no-op; 기존 동작, 폰트 종속 | 🚫 dropped | — | — | — |
+| `chore/identity-prediction-instruments` | 사전등록 예측 12건 중 6건 미측정(P2 uniform-only corr, P6 median-over-unclamped, P8 working-ΔL near-floor, P3 locality, P11 perf) + 가드레일 풀링이 8-context(사전등록은 6-image mean) — proxies 하네스 확장/정합(chainB 리뷰) | 🚫 dropped | — | — | — |
+| `fix/identity-ab-blinding-protocol` | 블라인드 A/B key가 봉인 아님(base64+공개 seed 0xDEADBEEF는 obfuscation일 뿐; sha256 commitment는 사후 변조 방지만 제공): ADR-0003 'sealed' 표현을 'committed'로 교정 + 강화 프로토콜(비밀 seed·key 분리 보관·verdict-before-reveal 커밋) | 🚫 dropped | — | — | ADR-0003 |
+| `spike/identity-guardrail-retune` | identity preset이 사전등록 가드레일 파괴(blocks: SSIM 0.079 vs 하한 0.758, CAS p10 0.012 vs 0.092; ascii는 Q2+A PASS) — 스펙 §6.4 새 라운드 트리거: λ/τ/coupling 재조율 또는 ADR로 하한 개정. blocks-crater vs ascii-stable 비대칭이 단서 | 🚫 dropped | — | — | — |

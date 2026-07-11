@@ -223,12 +223,12 @@ tasks:
     severity: "minor"
   - id: spike/identity-guardrail-retune
     title: "identity preset이 사전등록 가드레일 파괴(blocks: SSIM 0.079 vs 하한 0.758, CAS p10 0.012 vs 0.092; ascii는 Q2+A PASS) — 스펙 §6.4 새 라운드 트리거: λ/τ/coupling 재조율 또는 ADR로 하한 개정. blocks-crater vs ascii-stable 비대칭이 단서"
-    status: "pending"
+    status: "dropped"
     severity: "major"
   - id: chore/identity-prediction-instruments
     notes: "review-2026-07-10-frontier-sweep F4 병합: 평가 suite가 로컬 파일 존재 종속(AOV 유무에 따라 6/8장면, 같은 명령·다른 가드레일 verdict — 사전등록은 6-image mean)·bench 입력/출력 gitignore로 clean checkout 감사 불가 → suite 고정(bench6/bench6-aov2, 필수 파일 누락 시 exit 2) + manifest(inputSha256·atlasProfileHash 등). 부수: header aovPresent가 shaded.png만 검사하나 평가는 coverage.png도 요구 — 정합 필요."
     title: "사전등록 예측 12건 중 6건 미측정(P2 uniform-only corr, P6 median-over-unclamped, P8 working-ΔL near-floor, P3 locality, P11 perf) + 가드레일 풀링이 8-context(사전등록은 6-image mean) — proxies 하네스 확장/정합(chainB 리뷰)"
-    status: "pending"
+    status: "dropped"
     severity: "major"
   - id: fix/contrast-floor-linear-exactness
     title: "linear-space floor가 1차 근사(scalar-slope rescale): dark/sparse 극단에서 표시 대비가 floor를 최대 ~3.4u8(14%) 미달 — 필요시 display-side 정확 평가로(chainB 리뷰 minor)"
@@ -270,7 +270,7 @@ tasks:
     origin: "review-2026-07-10-frontier-sweep"
   - id: fix/identity-ab-blinding-protocol
     title: "블라인드 A/B key가 봉인 아님(base64+공개 seed 0xDEADBEEF는 obfuscation일 뿐; sha256 commitment는 사후 변조 방지만 제공): ADR-0003 'sealed' 표현을 'committed'로 교정 + 강화 프로토콜(비밀 seed·key 분리 보관·verdict-before-reveal 커밋)"
-    status: "pending"
+    status: "dropped"
     severity: "major"
     anchor: "ADR-0003"
     origin: "review-2026-07-10-frontier-sweep"
@@ -290,3 +290,13 @@ tasks:
     status: "pending"
     severity: "minor"
     origin: "review-2026-07-10-frontier-sweep"
+  - id: feat/identity-ascii-charset-coherence
+    title: "ASCII-identity 미학의 charset 비일관성 해소 — 현재 출력은 블록·선문자·산발 glyph 혼재로 산만(사용자 2026-07-11 pair-00 판정): 일관된 ascii ramp 우선(web demo ascii 모드가 최우선 타겟), block은 옵션으로 유지. 단서: ascii는 재구성 가드레일 안정·blocks는 크레이터라는 비대칭(구 spike/identity-guardrail-retune)"
+    status: "pending"
+    severity: "major"
+    anchor: "ADR-0003"
+  - id: feat/color-dither-toggle
+    title: "coupling의 색 dithering 효과를 on/off toggle 옵션으로 노출(사용자 선호 — pair-00 feature 쪽 선호): CLI --identity 및 web demo 양쪽에서 켜고 끌 수 있게"
+    status: "pending"
+    severity: "minor"
+    anchor: "ADR-0003"
