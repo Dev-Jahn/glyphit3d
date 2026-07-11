@@ -12,4 +12,4 @@ review:
   reviewers: [codex, gemini, gpt-5.5-pro]
   require_ci: false
 state:
-  last_round_commit: 09447b1733ed296992d572ab13cd2abb455ad520
+  last_round_commit: f8d033dac99844f0659eccee48700160a21a972e
