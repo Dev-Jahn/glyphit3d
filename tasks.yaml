@@ -292,7 +292,7 @@ tasks:
     origin: "review-2026-07-10-frontier-sweep"
   - id: feat/identity-ascii-charset-coherence
     title: "ASCII-identity 미학의 charset 비일관성 해소 — 현재 출력은 블록·선문자·산발 glyph 혼재로 산만(사용자 2026-07-11 pair-00 판정): 일관된 ascii ramp 우선(web demo ascii 모드가 최우선 타겟), block은 옵션으로 유지. 단서: ascii는 재구성 가드레일 안정·blocks는 크레이터라는 비대칭(구 spike/identity-guardrail-retune)"
-    status: "pending"
+    status: "active"
     severity: "major"
     anchor: "ADR-0003"
   - id: feat/color-dither-toggle

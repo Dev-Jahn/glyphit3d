@@ -119,6 +119,18 @@ export interface MatchOptions {
   identityLambda?: number;   // λ_id ≥ 0, preset 5
   identityTau?: number;      // τ_id > 0, uniformity knee (working per-pixel-channel AC energy), default 2.5e-4 (read only when identityLambda>0)
 
+  // feat/identity-ascii-charset-coherence (spec) — selectable charset-coherence mode for the ASCII
+  // identity aesthetic. Default 'none' (or absent) → BYTE-IDENTICAL to the plain identity prior path
+  // (top invariant). Any non-'none' mode requires identityLambda>0 AND quality 2 (throws otherwise, no
+  // fallback). Operates on OBJECT cells only (the gate/flat/background contract is unchanged). The ramp
+  // set R (core/identity.ts rampSet) is the clean coverage-ordered ASCII glyph ramp:
+  //   'ramp-bias'  — object-cell scan candidates restricted to R + normal LS shape score, with the ramp
+  //                  pull widened (uniformity weight floored, u' = max(u, 0.5)); shape tie-breaks in R.
+  //   'pure-ramp'  — object cell = argmin_{g∈R}(ρ_g−ρ*)²; no LS shape term. fg/bg via the Q2 color path.
+  //   'smooth'     — full ASCII scan + neighbor-consistency penalty μ·[(ρ_g−ρ_left)²+(ρ_g−ρ_top)²] over
+  //                  the already-decided raster-order left/top neighbors (μ = the cell's own λ·u·D·P).
+  identityCoherence?: 'none' | 'ramp-bias' | 'pure-ramp' | 'smooth';
+
   // feat/shape-color-coupling (spec §4) — absent = off = byte-identical. Requires quality 2; throws
   // otherwise and throws with styleAlbedoColors (two competing color-rewrite passes). Rescales the
   // fitted fg by a hue-preserving luma gain k so the emitted cell DC-luma tracks the cell mean Ȳ

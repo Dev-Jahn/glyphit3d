@@ -49,6 +49,7 @@ async function bakeCmd(): Promise<void> {
       identity: { type: 'boolean', default: false },
       'identity-lambda': { type: 'string' },
       'identity-tau': { type: 'string' },
+      'identity-coherence': { type: 'string' },
       'couple-strength': { type: 'string' },
       'sat-knee': { type: 'string' },
       'sat-min': { type: 'string' },
@@ -63,13 +64,13 @@ async function bakeCmd(): Promise<void> {
   });
   const target = positionals[0];
   if (!target) {
-    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--identity-coherence none|ramp-bias|pure-ramp|smooth] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const cols = parseInt(values.cols!, 10);
   const quality = identityQuality(values.identity!, parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4);
   const space = values.space === 'linear' ? 'linear' : 'gamma';
-  const charset = values.charset as keyof typeof CHARSETS;
+  const charset = identityCharset(values.identity!, values.charset!);
   const fontSize = parseInt(values['font-size']!, 10);
 
   // Resolve the AOV directory: a directory input is used directly; a model file is
@@ -217,6 +218,14 @@ function identityQuality(identity: boolean, quality: 0 | 1 | 2 | 3 | 4): 0 | 1 |
   return 2;
 }
 
+// ASCII-first charset default under --identity (spec §CLI, user directive): --identity flips the
+// default charset 'blocks' → 'ascii'. An EXPLICIT --charset still wins (block set stays usable).
+function identityCharset(identity: boolean, charset: string): keyof typeof CHARSETS {
+  if (!identity) return charset as keyof typeof CHARSETS;
+  const explicit = argv.some((a) => a === '--charset' || a.startsWith('--charset='));
+  return (explicit ? charset : 'ascii') as keyof typeof CHARSETS;
+}
+
 // Apply the --identity preset (spec §5) + override flags onto MatchOptions. The preset turns on all
 // three members of the aesthetic family: the selection prior (λ=5, τ=2.5e-4), shape-color coupling
 // (defaults) and the contrast floor (24/255≈0.0941 working luma — the u8-24 visibility threshold).
@@ -229,7 +238,7 @@ function applyIdentity(opts: MatchOptions, values: Record<string, string | boole
     if (!Number.isFinite(n)) { console.error(`--${k} must be a number`); process.exit(2); }
     return n;
   };
-  const overrideKeys = ['identity-lambda', 'identity-tau', 'couple-strength', 'sat-knee', 'sat-min', 'k-max', 'floor'];
+  const overrideKeys = ['identity-lambda', 'identity-tau', 'identity-coherence', 'couple-strength', 'sat-knee', 'sat-min', 'k-max', 'floor'];
   const anyOverride = overrideKeys.some((k) => values[k] !== undefined);
   if (!values.identity) {
     if (anyOverride) { console.error('--identity-* / --couple-strength / --sat-knee / --sat-min / --k-max / --floor require --identity'); process.exit(2); }
@@ -249,6 +258,14 @@ function applyIdentity(opts: MatchOptions, values: Record<string, string | boole
   const sm = num('sat-min'); if (sm !== undefined) coupling.satMin = sm;
   const km = num('k-max'); if (km !== undefined) coupling.kMax = km;
   opts.coupling = coupling;
+  // Charset-coherence mode (spec §CLI). Requires --identity (rejected above via overrideKeys).
+  const coh = values['identity-coherence'];
+  if (coh !== undefined) {
+    if (coh !== 'none' && coh !== 'ramp-bias' && coh !== 'pure-ramp' && coh !== 'smooth') {
+      console.error('--identity-coherence must be none|ramp-bias|pure-ramp|smooth'); process.exit(2);
+    }
+    opts.identityCoherence = coh;
+  }
 }
 
 async function main(): Promise<void> {
@@ -270,6 +287,7 @@ async function main(): Promise<void> {
       identity: { type: 'boolean', default: false },
       'identity-lambda': { type: 'string' },
       'identity-tau': { type: 'string' },
+      'identity-coherence': { type: 'string' },
       'couple-strength': { type: 'string' },
       'sat-knee': { type: 'string' },
       'sat-min': { type: 'string' },
@@ -284,14 +302,14 @@ async function main(): Promise<void> {
   });
 
   if (positionals[0] !== 'image' || !positionals[1]) {
-    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--identity-coherence none|ramp-bias|pure-ramp|smooth] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const input = positionals[1];
   const cols = parseInt(values.cols!, 10);
   const quality = identityQuality(values.identity!, parseInt(values.quality!, 10) as 0 | 1 | 2 | 3 | 4);
   const space = values.space === 'gamma' ? 'gamma' : 'linear';
-  const charset = values.charset as keyof typeof CHARSETS;
+  const charset = identityCharset(values.identity!, values.charset!);
   const fontSize = parseInt(values['font-size']!, 10);
 
   const atlas = await buildAtlas(values.font!, fontSize, charset);

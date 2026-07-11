@@ -9,7 +9,7 @@ import { glyphOrientations, orientationBonus, borderProfiles, structureTensor } 
 import type { Orientation } from '../atlas/orientation.js';
 import { extractPolylines, viterbiContour } from './contour.js';
 import { buildPalette, bestPair, paletteSrgb } from './palette.js';
-import { precomputeIdentity, rhoStar, uWeight } from './identity.js';
+import { precomputeIdentity, rhoStar, uWeight, rampSet } from './identity.js';
 import { coupleFg, resolveCoupling } from './coupling.js';
 
 function clamp01(x: number): number { return x < 0 ? 0 : x > 1 ? 1 : x; }
@@ -113,6 +113,27 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
     if ((opts.families?.length ?? 0) > 0) throw new Error('identity selection prior is not supported with families in v1 (penalty not forwarded into solveFamily)');
     if (LF - LB < 0.5) throw new Error('identity selection prior requires L_F − L_B ≥ 0.5 working luma (bright-fg-on-dark-bg; ρ* degenerates otherwise)');
   }
+  // feat/identity-ascii-charset-coherence (spec): selectable charset-coherence mode. 'none'/absent →
+  // no new logic runs → byte-identical (top invariant). Any non-'none' mode requires the identity
+  // prior on (identityLambda>0) AND quality 2 — same loud-throw contract as the other identity flags
+  // (no fallback). Both guards are independent of the identityLambda block above (which is skipped when
+  // identityLambda=0), so coherence≠none with identityLambda=0 still fails fast here.
+  const coherence = opts.identityCoherence ?? 'none';
+  if (coherence !== 'none') {
+    if (quality !== 2) throw new Error('identity charset-coherence requires quality 2 (fixed-bg fg fit)');
+    if (identityLambda <= 0) throw new Error('identity charset-coherence requires the identity prior on (identityLambda > 0)');
+  }
+  const cohRampBias = coherence === 'ramp-bias';
+  const cohPureRamp = coherence === 'pure-ramp';
+  const cohSmooth = coherence === 'smooth';
+  const cohRestrict = cohRampBias || cohPureRamp; // object-cell scan candidates limited to R
+  // Ramp candidate set R (spec) built once per atlas — only when a coherence mode is active.
+  const ramp = coherence !== 'none' ? rampSet(atlas) : null;
+  // ramp-bias/pure-ramp restrict the object-cell scan to R; an empty R would skip every glyph and
+  // silently emit glyphs[0] (a fallback). Fail fast instead (spec no-fallback), mirroring the other
+  // identity guards. CLI-unreachable (all shipped charsets ⊇ ASCII) but matchGrid is a public API.
+  if (cohRestrict && ramp!.idx.length === 0) throw new Error('identity charset-coherence ramp-bias/pure-ramp requires a non-empty ramp set R (atlas contains none of the ramp glyphs)');
+  const U_MIN = 0.5; // ramp-bias uniformity-weight floor: u' = max(u, u_min) (spec, no extra knob)
   if (couplingParams) {
     if (quality !== 2) throw new Error('shape-color coupling requires quality 2 (fixed-bg fg fit)');
     if (opts.styleAlbedoColors) throw new Error('shape-color coupling is incompatible with styleAlbedoColors (two competing color-rewrite passes)');
@@ -220,6 +241,9 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
   }];
 
   const cells: GridCell[] = new Array(cols * rows);
+  // smooth coherence: per-cell chosen glyph coverage ρ, filled in raster order so each cell's
+  // scan can read its already-decided left/top neighbors' coverage for the consistency penalty.
+  const chosenRho = cohSmooth ? new Float64Array(cols * rows) : null;
 
   // M1 score-prior extensions (M1-SPEC §3). All default off → the loop below runs
   // the exact M0 statements (bit-identical output). Every addition is guarded so no
@@ -436,6 +460,9 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
           const c = cells[cellIdx]!;
           cands[cellIdx] = [{ glyphIdx: gatedGi, score: eacScale, F: c.fg ?? encode(mean), B: c.bg ?? encode(mean), fgNull: c.fg === null }];
         }
+        // smooth: a gated cell keeps the gate contract, but its glyph's coverage still seeds the
+        // neighbor-consistency penalty for the object cells to its right/below.
+        if (chosenRho) chosenRho[cellIdx] = idRho![gatedGi]!;
         continue;
       }
 
@@ -517,15 +544,24 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       // ρ*, both O(1) from the per-cell stats (m_c=ST_c/P, s=eacScale/3P, D=Σ(m_c−fbg_c)²). Added
       // to every glyph's score in the scan below and folded into the topK heap so cand[0]==winner.
       // identityLambda=0 → idOn false → the scan is byte-identical (V1).
-      let idW = 0, idRs = 0;
+      let idW = 0, idRs = 0, idWbias = 0, smoothW = 0;
       const idOn = identityLambda > 0;
       if (idOn) {
         const mr = ST[0]! / P, mg = ST[1]! / P, mb = ST[2]! / P;
         const s = eacScale / (3 * P);
         const D = (mr - fbg[0]) * (mr - fbg[0]) + (mg - fbg[1]) * (mg - fbg[1]) + (mb - fbg[2]) * (mb - fbg[2]);
         idRs = rhoStar(luma(mr, mg, mb), LB, LF);
-        idW = identityLambda * uWeight(s, identityTau) * D * P;
+        const uCell = uWeight(s, identityTau);
+        idW = identityLambda * uCell * D * P;
+        // ramp-bias: widen the ramp pull by flooring the uniformity weight (u' = max(u, u_min)).
+        if (cohRampBias) idWbias = identityLambda * Math.max(uCell, U_MIN) * D * P;
+        // smooth: neighbor-consistency weight μ = λ·D·P — the ramp weight WITHOUT the uniformity
+        // factor u, so the neighbor pull does not vanish on structured object cells (where u→0);
+        // it stays commensurate with the cell-contrast SSE scale D·P it competes with. No new knob.
+        if (cohSmooth) smoothW = identityLambda * D * P;
       }
+      const nRhoLeft = cohSmooth && col > 0 ? chosenRho![cellIdx - 1]! : 0;
+      const nRhoTop = cohSmooth && row > 0 ? chosenRho![cellIdx - cols]! : 0;
 
       // 2. scan all glyphs
       if (cands) heapN = 0;
@@ -534,11 +570,21 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       let bestPFg = 0, bestPBg = 0; // palette winner's (fg,bg) palette indices
       for (let gi = 0; gi < G; gi++) {
         const g = glyphs[gi]!;
+        // ramp-bias / pure-ramp: restrict the object-cell candidate set to R (spec).
+        if (cohRestrict && ramp!.member[gi] === 0) continue;
         gStats.Sa1 = g.sumA;
         gStats.S11 = P;
         gStats.Saa = isQ4 ? g.sumAA + lam2 * g.gradAA : g.sumAA;
         const alpha = g.alpha, dxA = g.dxA, dyA = g.dyA;
         let score = 0;
+        // pure-ramp: pure brightness→glyph, argmin_{g∈R}(ρ_g−ρ*)². NO LS shape term (spec).
+        if (cohPureRamp) {
+          const d = idRho![gi]! - idRs;
+          score = d * d;
+          if (cands) heapPush(score, gi);
+          if (score < bestScore) { bestScore = score; bestGi = gi; }
+          continue;
+        }
         if (pal) {
           // Palette pair search: same per-channel saT/STT (Q4 edge augmentation folded in), but
           // the fit argmins over discrete palette (fg,bg) pairs via sseAt (§3.2 (2)) instead of
@@ -579,7 +625,8 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         }
         score += opts.mdlLambda * g.ink * eacScale;
         // Identity selection prior (spec §3.1): pull ρ_g toward the ramp ρ*, weighted by u·D·P.
-        if (idOn) { const d = idRho![gi]! - idRs; score += idW * d * d; }
+        // ramp-bias uses the floored-uniformity weight idWbias (wider pull); else the plain idW.
+        if (idOn) { const d = idRho![gi]! - idRs; score += (cohRampBias ? idWbias : idW) * d * d; }
         // §4.1: extra shading-luma channel, own closed-form (a,b), SSE weighted by η.
         // Fitted colors are discarded — only its SSE enters the selection score.
         if (Lpatch) {
@@ -604,6 +651,15 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         // stroke angle aligns with the cell edge (π-periodic via cos 2Δ), weighted by the
         // edge strength w_e, the glyph anisotropy a_g and the cell AC energy.
         if (oriBoundary) score -= orientationBonus(glyphOri![gi]!, oriTheta, oriWe, eacScale, orientKappa);
+        // smooth: neighbor-consistency penalty over the already-decided left/top neighbors, so a
+        // region converges onto one glyph family (spec). μ = smoothW (the cell's own ramp weight).
+        if (cohSmooth) {
+          const rg = idRho![gi]!;
+          let np = 0;
+          if (col > 0) { const dl = rg - nRhoLeft; np += dl * dl; }
+          if (row > 0) { const dt = rg - nRhoTop; np += dt * dt; }
+          score += smoothW * np;
+        }
         if (cands) heapPush(score, gi);
         if (score < bestScore) { bestScore = score; bestGi = gi; }
       }
@@ -789,6 +845,11 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         // text winners keep their full topK list (cand[0] already reproduces the emit).
         if (cands && lastCollapsed) cands[cellIdx] = singleCand(cells[cellIdx]!, bestGi, bestScore);
       }
+      // smooth: record the EMITTED glyph's coverage for its right/below neighbors — 0 when the
+      // contrast floor or the invisibility collapse demoted the emit to space, so neighbors are not
+      // pulled toward the phantom (unemitted) scan-winner glyph. Matches the gated path's seed of
+      // the emitted glyph (space glyphs carry ρ=0 anyway, so this is exact for a true space winner).
+      if (chosenRho) chosenRho[cellIdx] = cells[cellIdx]!.ch === ' ' ? 0 : idRho![bestGi]!;
     }
   }
 

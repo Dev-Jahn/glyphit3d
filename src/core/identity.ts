@@ -39,6 +39,37 @@ export function uWeight(s: number, tau: number): number {
   return tau / (tau + s);
 }
 
+// Ordered ASCII coverage-ramp characters (feat/identity-ascii-charset-coherence, spec "램프 후보
+// 집합 R"): visually "clean" glyphs whose ink is spatially DISTRIBUTED, so a monotone coverage
+// sweep reads as a brightness ramp rather than a glyph soup. Punctuation/symbols with concentrated
+// or asymmetric ink ({}[]|^~<> …) and most digits are excluded (they read as symbols, not density).
+// Space (ρ=0) anchors the low end. The ORDER here is irrelevant — rampSet sorts by the ACTUAL
+// per-atlas coverage — and only the subset the atlas builder actually kept is used (spec: "실제
+// atlas에 존재하는 것만"). This is the recommended set from the spec: `. : - = + * o c s a e w m # % @`.
+const RAMP_CHARS = [' ', '.', '-', ':', '*', '+', '=', 'c', 's', 'o', 'e', 'w', '%', 'a', 'm', '#', '@'];
+
+export interface RampSet {
+  idx: Int32Array;      // atlas glyph indices in R, sorted by ρ_g ascending (the ordered ramp)
+  member: Uint8Array;   // per-atlas-glyph membership flag (length = atlas.glyphs.length), 1 iff glyph ∈ R
+  chars: string[];      // the actual R glyphs in coverage-ascending order — for reporting/diagnostics
+}
+
+// Build the ramp candidate set R for one atlas (feat/identity-ascii-charset-coherence): the RAMP_CHARS
+// glyphs the atlas builder actually kept, sorted by their true coverage ρ_g = sumA/P ascending. O(G),
+// once per atlas. Used only by the identityCoherence ramp-bias/pure-ramp/smooth modes in match.ts.
+export function rampSet(atlas: Atlas): RampSet {
+  const G = atlas.glyphs.length;
+  const member = new Uint8Array(G);
+  const want = new Set(RAMP_CHARS);
+  const chosen: { gi: number; rho: number; ch: string }[] = [];
+  for (let gi = 0; gi < G; gi++) {
+    const g = atlas.glyphs[gi]!;
+    if (want.has(g.ch)) { member[gi] = 1; chosen.push({ gi, rho: g.sumA / atlas.P, ch: g.ch }); }
+  }
+  chosen.sort((a, b) => a.rho - b.rho);
+  return { idx: Int32Array.from(chosen, (c) => c.gi), member, chars: chosen.map((c) => c.ch) };
+}
+
 // Selection-prior penalty for one glyph (spec §3.1 last term): λ·u·D·P·(ρ_g − ρ*)². D is the
 // flat-cell contrast scale Σ_c(m_c − fbg_c)² (matches the scale of the Q2 SSE it competes with,
 // spec §3.2). ≡ 0 whenever λ = 0 (byte-identical off) or D = 0 (cell equals the fixed bg). match.ts
