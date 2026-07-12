@@ -58,4 +58,10 @@ export class Ladder {
     this.buttons.forEach((b, i) => b.classList.toggle('active', i === q));
     this.caption.textContent = CAPTIONS[q] ?? '';
   }
+
+  // feat/identity-web-wiring: ASCII-identity is a fixed Q2 aesthetic, so the demo pins quality to 2 and
+  // disables the ladder while it is on (re-enabling restores Q0–Q3; Q4 stays disabled on the web).
+  setEnabled(on: boolean): void {
+    this.buttons.forEach((b, q) => { if (q <= WEB_MAX_QUALITY) b.disabled = !on; });
+  }
 }

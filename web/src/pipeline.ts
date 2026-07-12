@@ -28,6 +28,12 @@ export interface PipelineParams {
   charset: string;
   contrastFloor?: number; // Round A ASCII-identity dark-path floor (0/absent = off). Threaded to BOTH paths: the GPU matcher applies it as a host per-cell post-pass, the CPU pool inside matchGrid.
   temporal?: TemporalParams; // feat/temporal-animation: absent ⇒ full rematch (today's behavior).
+  // feat/identity-web-wiring: the ASCII-identity preset knobs (absent/false ⇒ byte-identical). Identity
+  // is Q2, so it always routes to the CPU pool (runPool) — the GPU Q3 path ignores these. The web
+  // dropdown never selects 'smooth', so identityCoherence here is the band-safe subset.
+  identity?: boolean;
+  identityCoherence?: 'none' | 'ramp-bias' | 'pure-ramp';
+  identityColorDither?: boolean;
 }
 
 export interface Timings { resample: number; match: number; raster: number; ssim: number }
@@ -132,6 +138,16 @@ export class Pipeline {
   // the same single-flight guarantee keeps its retained buffers touched by one run at a time. If a
   // future caller ever invokes pipeline.run() OUTSIDE the coalescer, that guard must be revisited.)
   async run(scene: Scene, atlas: Atlas, params: PipelineParams, interactive: boolean): Promise<PipelineOutput> {
+    // feat/identity-web-wiring NO-FALLBACK guard: the ASCII-identity preset is a Q2-only aesthetic —
+    // the CPU pool applies the selection prior (bandMatchOptions → applyIdentityPreset → matchGrid),
+    // but the GPU Q3 path (runGpu) never reads the identity knobs. An identity run that is NOT pinned
+    // to Q2 would route to the GPU (quality===3 below) and SILENTLY drop the prior. The UI toggle
+    // always pairs {identity:true, quality:2}; this rejects the raw __app.setParams console surface
+    // (and any future caller) LOUDLY at the single routing choke point every run passes through,
+    // mirroring the core backstop (src/core/match.ts) that can only fire once a run is on the pool
+    // path. Identity OFF never trips this, so the byte-identical default path is untouched.
+    if (params.identity && params.quality !== 2)
+      throw new Error(`identity requires quality 2 (Q2 CPU pool); got quality ${params.quality}`);
     const { cellW, cellH } = atlas;
     const gridW = params.cols * cellW;
     const rows = gridRows(params.cols, SCENE_ASPECT, 1, cellW, cellH);
@@ -285,6 +301,7 @@ export class Pipeline {
         type: 'matchBand', id, band: b, charset: params.charset,
         img: { w, h: br * cellH, data: slice }, cols: params.cols, quality: params.quality, space: params.space,
         contrastFloor: params.contrastFloor,
+        identity: params.identity, identityCoherence: params.identityCoherence, identityColorDither: params.identityColorDither,
       };
       layout.push({ r0, rows: br });
       bandReqs.push(this.request<BandResult>(this.workers[b]!, req, [slice.buffer])); // … then transfer

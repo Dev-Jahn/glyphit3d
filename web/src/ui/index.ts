@@ -29,7 +29,7 @@ async function boot(): Promise<void> {
   (app().scene as Scene).attachOrbit(scrubber.element);
   scrubber.element.addEventListener('pointermove', (e) => { if (e.buttons & 1) scrubber.redraw(); });
   const ladder = new Ladder(ssim);
-  const controls = new Controls();
+  const controls = new Controls(ladder);
   const exports = new Exports(raster);
   const permalink = new Permalink();
 
@@ -56,7 +56,11 @@ async function boot(): Promise<void> {
     ]),
     el('div', { class: 'grid' }, [
       el('div', { class: 'stage-col' }, [scrubber.element, toolbar, viewport]),
-      el('div', { class: 'rack' }, [ladder.element, controls.element, exports.element, permalink.element]),
+      // feat/identity-web-wiring / feat/web-model-picker: the controls panel now carries the model
+      // picker + the ASCII-identity block, so it is taller. Keep `exports` ABOVE it in the rack so the
+      // primary download actions stay within the first viewport (the tall scrubber stage means a page
+      // scroll to reach a below-the-fold control scrolls the stage out of view).
+      el('div', { class: 'rack' }, [ladder.element, exports.element, controls.element, permalink.element]),
     ]),
     el('div', { class: 'hidden-buf' }, [raster]),
     perf,

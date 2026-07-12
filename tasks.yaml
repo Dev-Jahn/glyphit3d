@@ -302,6 +302,10 @@ tasks:
     anchor: "ADR-0003"
   - id: feat/identity-web-wiring
     title: "ASCII-identity 미학(Q2+pure-ramp+coupling+floor+color-dither 토글)을 web 데모에 인터랙티브 노출 — 현재 웹은 quality 0-3만 쓰고 identity 경로 미배선(사용자 최우선). worker prep/GpuRaster 경로 위 재유도 + UI 토글(coherence·color-dither) 필요"
-    status: "pending"
+    status: "done"
     severity: "major"
     anchor: "ADR-0003"
+  - id: feat/web-model-picker
+    title: "web 데모에 선택 가능한 3D 모델 여러 종 추가(현재 torus knot만) — 프로시저럴 three.js 지오메트리(sphere/torus/box/cone/cylinder/icosahedron/teapot 등) + controls.ts <select> + main.ts __app.setModel(forceKeyframe+coalescer) + bridge.ts AppApi. render→match 그대로 통과, 파이프라인 변경 불요"
+    status: "done"
+    severity: "major"

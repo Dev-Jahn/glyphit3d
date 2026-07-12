@@ -5,6 +5,7 @@ import { renderPerf } from './perf.js';
 import { createCoalescer } from './coalescer.js';
 import { resolveRunContext } from './run-snapshot.js';
 import { keyframeNeeded, type TemporalKey } from './temporal-route.js';
+import { makeModel, isModelName, type ModelName } from './models.js';
 import type { Atlas } from '../../src/core/types.js';
 import './ui/index.js';
 
@@ -18,6 +19,16 @@ interface Params {
   yaw: number;
   pitch: number;
   floor: number;
+  // feat/identity-web-wiring: the ASCII-identity aesthetic knobs. identity OFF by default → the pipeline
+  // params carry identity:false and output is byte-identical to HEAD. The coherence union EXCLUDES
+  // 'smooth' (band-unsafe in the row-band worker pool — see band-opts.ts); the dropdown offers the other
+  // three. identityColorDither default true (colour); false = monochrome.
+  identity: boolean;
+  identityCoherence: 'none' | 'ramp-bias' | 'pure-ramp';
+  identityColorDither: boolean;
+  // feat/web-model-picker: the current procedural model (permalink-encoded). Default 'torusknot' keeps
+  // first-load identical to the scene's built-in default.
+  model: ModelName;
 }
 
 // Defaults (M2-SPEC §2). Fragment settings (written by the UI permalink) override
@@ -31,7 +42,7 @@ interface Params {
 // it stays OFF in every bench/gate (defaultOptions keeps 0) and is applied here only. BOTH matchers
 // apply it — the WebGPU Q3 matcher as a host per-cell post-pass, the CPU pool inside matchGrid — so
 // the floored default path still reports matcher 'gpu'. #floor=0 in the permalink turns it off.
-const params: Params = { cols: 100, quality: 3, charset: 'blocks', space: 'gamma', yaw: 30, pitch: -15, floor: 0.06 };
+const params: Params = { cols: 100, quality: 3, charset: 'blocks', space: 'gamma', yaw: 30, pitch: -15, floor: 0.06, identity: false, identityCoherence: 'pure-ramp', identityColorDither: true, model: 'torusknot' };
 applyFragment(params);
 
 const sceneCanvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -40,6 +51,10 @@ const perfEl = document.getElementById('perf') as HTMLElement;
 const ssimEl = document.getElementById('ssim') as HTMLElement;
 
 const scene = new Scene(sceneCanvas);
+// feat/web-model-picker: the Scene constructor primes the built-in torus knot; a permalink `model=…`
+// swaps it in before the first render. Default (torusknot / no fragment) is a no-op, so first load is
+// unchanged.
+if (params.model !== 'torusknot') scene.setModel(makeModel(params.model));
 const pipeline = new Pipeline();
 
 let atlas: Atlas | null = null;
@@ -102,7 +117,7 @@ async function rematch(interactive = false): Promise<void> {
     // this snapshot, so they cannot tear; if params changed mid-run the coalescer's dirty-drain
     // re-runs with a fresh snapshot and the seq guard below drops this now-stale commit. `floor`
     // rides the SAME snapshot so the contrast floor can never tear from the grid it produced.
-    const snap = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset, yaw: params.yaw, pitch: params.pitch, floor: params.floor };
+    const snap = { cols: params.cols, quality: params.quality, space: params.space, charset: params.charset, yaw: params.yaw, pitch: params.pitch, floor: params.floor, identity: params.identity, identityCoherence: params.identityCoherence, identityColorDither: params.identityColorDither };
     const { atlas: a, runParams } = await resolveRunContext(snap, ensureAtlas);
     scene.setOrbit(snap.yaw, snap.pitch);
     // Output-snapshot for exports/getOutputParams (F1: from the SAME pre-await snapshot, so it pairs
@@ -114,11 +129,17 @@ async function rematch(interactive = false): Promise<void> {
     // decide keyframe-vs-delta. Only when temporal reuse is enabled do we thread a temporal block;
     // otherwise it stays undefined and the pipeline runs exactly today's full rematch. The key rides
     // the snapshot so a config change can never tear from the keyframe decision it drives.
+    // LATENT HAZARD (feat/identity-web-wiring): TemporalKey below does NOT yet carry the identity
+    // knobs (identity / identityCoherence / identityColorDither). Harmless TODAY — temporal reuse is a
+    // no-op end-to-end (temporalCfg.enabled defaults false; pipeline.ts runGpu does not consume
+    // params.temporal), so no reference frame is ever retained across an identity change. When
+    // feat/temporal-interactive-wiring lands, the 3 identity fields MUST join this key (a change ⇒
+    // keyframe reset), else a retained non-identity frame would be reused under identity ON.
     const nextTemporalKey: TemporalKey = { charset: snap.charset, cols: snap.cols, space: snap.space, quality: snap.quality, floor: snap.floor };
     const temporal = temporalCfg.enabled
       ? { epsilon: 0, delta: temporalCfg.delta, keyframe: keyframeNeeded({ interactive, prevKey: lastTemporalKey, nextKey: nextTemporalKey, forcedReset: forceKeyframe }) }
       : undefined;
-    const out = await pipeline.run(scene, a, { ...runParams, contrastFloor: snap.floor, temporal }, interactive);
+    const out = await pipeline.run(scene, a, { ...runParams, contrastFloor: snap.floor, temporal, identity: snap.identity, identityCoherence: snap.identityCoherence, identityColorDither: snap.identityColorDither }, interactive);
     // Stale-run guard (F1): a newer rematch started while this one was awaiting — drop it
     // whole. No mutation of screen, `last`, #ssim, perf, or the onOutput trigger, so a slow
     // older run cannot overwrite the current frame/state/exports with mismatched params.
@@ -194,6 +215,10 @@ declare global {
     __app: {
       rematch: () => Promise<void>;
       setParams: (p: Partial<Params>) => void;
+      // feat/web-model-picker: swap the procedural model. Same commit path as a dropped GLB
+      // (scene.setModel bounds-reframes + relights, forceKeyframe, coalescer.request). Throws on an
+      // unknown name (no fallback). Records params.model so the permalink round-trips it.
+      setModel: (name: string) => void;
       // feat/temporal-animation: arm interactive temporal reuse and set the hysteresis margin δ
       // (eacScale units). Off by default. Toggling always arms a keyframe so the next run rebuilds a
       // clean reference frame. NOTE: currently a no-op end-to-end — the Pipeline does not consume
@@ -214,6 +239,15 @@ window.__app = {
   // rematch can never overlap an in-flight orbit/GPU match on the shared GpuMatcher.
   rematch: () => coalescer.request(false),
   setParams: (p) => { Object.assign(params, p); },
+  setModel: (name) => {
+    if (!isModelName(name)) throw new Error(`unknown model '${name}'`);
+    params.model = name;
+    scene.setModel(makeModel(name));
+    // A model swap invalidates any retained temporal reference frame (SPEC §4.4 reset matrix) → the
+    // next run must keyframe — same as the GLB drop handler.
+    forceKeyframe = true;
+    void coalescer.request(false);
+  },
   setTemporal: (cfg) => {
     temporalCfg = {
       enabled: cfg.enabled ?? temporalCfg.enabled,
@@ -284,4 +318,8 @@ function applyFragment(p: Params): void {
   // #floor=0 disables the dark-path default. Out-of-range/garbage keeps the measured default.
   const floor = n('floor');
   if (floor !== undefined) p.floor = clamp(floor, 0, 0.5);
+  // feat/web-model-picker: a known model name applies; garbage keeps the default torus knot. Identity
+  // knobs are intentionally NOT read from the fragment (identity stays OFF on load → byte-identical).
+  const model = q.get('model');
+  if (model !== null && isModelName(model)) p.model = model;
 }

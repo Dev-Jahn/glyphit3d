@@ -20,6 +20,7 @@ import { ssim } from './metric/ssim.js';
 import { luma, linearToSrgb } from './core/color.js';
 import { cellDiffHeatmap } from './metric/heatmap.js';
 import { defaultOptions, gridRows } from './core/options.js';
+import { applyIdentityPreset, type IdentityCoherence } from './core/identity-preset.js';
 // Re-exported for existing node-side importers (scripts/tests) that expect these
 // on cli.js; the pure definitions live in core/options.js for browser reuse.
 export { defaultOptions, gridRows } from './core/options.js';
@@ -227,10 +228,12 @@ function identityCharset(identity: boolean, charset: string): keyof typeof CHARS
   return (explicit ? charset : 'ascii') as keyof typeof CHARSETS;
 }
 
-// Apply the --identity preset (spec §5) + override flags onto MatchOptions. The preset turns on all
-// three members of the aesthetic family: the selection prior (λ=5, τ=2.5e-4), shape-color coupling
-// (defaults) and the contrast floor (24/255≈0.0941 working luma — the u8-24 visibility threshold).
-// Override flags refine individual knobs; any override without --identity is rejected loudly.
+// Apply the --identity preset (spec §5) + override flags onto MatchOptions. The preset (selection
+// prior λ=5/τ=2.5e-4 + charset coherence + shape-color coupling) is the shared applyIdentityPreset
+// (core/identity-preset.ts), so the web worker builds the SAME options. The CLI layers its own
+// contrast floor (24/255≈0.0941 working luma — the u8-24 visibility threshold; the helper leaves the
+// floor to the caller) and the diagnostic override flags on top. Any override without --identity is
+// rejected loudly.
 export function applyIdentity(opts: MatchOptions, values: Record<string, string | boolean | undefined>): void {
   const num = (k: string): number | undefined => {
     const v = values[k];
@@ -245,45 +248,47 @@ export function applyIdentity(opts: MatchOptions, values: Record<string, string 
     if (anyOverride) { console.error('--identity-* / --couple-strength / --sat-knee / --sat-min / --k-max / --floor require --identity'); process.exit(2); }
     return;
   }
-  // preset
-  opts.identityLambda = 5;
-  opts.identityTau = 2.5e-4;
-  opts.contrastFloor = 24 / 255;
-  const coupling: NonNullable<MatchOptions['coupling']> = {};
-  // overrides (diagnostic sweeps, spec §6.4 — acceptance is judged on the defaults only)
-  const lam = num('identity-lambda'); if (lam !== undefined) { if (lam < 0) { console.error('--identity-lambda must be >= 0'); process.exit(2); } opts.identityLambda = lam; }
-  const tau = num('identity-tau'); if (tau !== undefined) { if (tau <= 0) { console.error('--identity-tau must be > 0'); process.exit(2); } opts.identityTau = tau; }
-  const floor = num('floor'); if (floor !== undefined) { if (floor < 0) { console.error('--floor must be >= 0'); process.exit(2); } opts.contrastFloor = floor; }
-  const cs = num('couple-strength'); if (cs !== undefined) coupling.strength = cs;
-  const sk = num('sat-knee'); if (sk !== undefined) coupling.satKnee = sk;
-  const sm = num('sat-min'); if (sm !== undefined) coupling.satMin = sm;
-  const km = num('k-max'); if (km !== undefined) coupling.kMax = km;
+  // Validate the two preset knobs the shared helper consumes (color dither + coherence) up front, so
+  // an illegal value fails loudly and the preset is fed a legal mode.
   // Color dither toggle (spec 변경 2). on (default) = coupling stays the color modulator. off =
   // monochrome: matchGrid forces fg=encode(fixedFg) on every identity Q2 emit, so coupling is left
-  // UNSET (no color-modulation pass). Requires --identity (rejected above via overrideKeys).
+  // UNSET (no color-modulation pass).
   const dither = values['identity-color-dither'];
   if (dither !== undefined && dither !== 'on' && dither !== 'off') {
     console.error('--identity-color-dither must be on|off'); process.exit(2);
   }
-  if (dither === 'off') {
+  const colorDither = dither !== 'off';
+  // Charset-coherence mode (spec §CLI). Default 'pure-ramp' (spec 변경 1: pure-ramp is the confirmed
+  // identity default coherence, ADR-0003); an explicit --identity-coherence overrides.
+  const coh = values['identity-coherence'];
+  if (coh !== undefined && coh !== 'none' && coh !== 'ramp-bias' && coh !== 'pure-ramp' && coh !== 'smooth') {
+    console.error('--identity-coherence must be none|ramp-bias|pure-ramp|smooth'); process.exit(2);
+  }
+  const coherence: IdentityCoherence = (coh as IdentityCoherence | undefined) ?? 'pure-ramp';
+
+  // shared preset (byte-identical to the pre-extraction CLI): sets identityLambda/Tau, coherence and
+  // either coupling (color dither on) or identityColorDither=false (monochrome).
+  applyIdentityPreset(opts, { coherence, colorDither });
+  // CLI contrast floor (helper leaves the floor to the caller; --floor overrides below).
+  opts.contrastFloor = 24 / 255;
+
+  // overrides (diagnostic sweeps, spec §6.4 — acceptance is judged on the defaults only)
+  const lam = num('identity-lambda'); if (lam !== undefined) { if (lam < 0) { console.error('--identity-lambda must be >= 0'); process.exit(2); } opts.identityLambda = lam; }
+  const tau = num('identity-tau'); if (tau !== undefined) { if (tau <= 0) { console.error('--identity-tau must be > 0'); process.exit(2); } opts.identityTau = tau; }
+  const floor = num('floor'); if (floor !== undefined) { if (floor < 0) { console.error('--floor must be >= 0'); process.exit(2); } opts.contrastFloor = floor; }
+  if (colorDither) {
+    // coupling is the color modulator (applyIdentityPreset set it to the defaults) — refine its knobs.
+    const cs = num('couple-strength'); if (cs !== undefined) opts.coupling!.strength = cs;
+    const sk = num('sat-knee'); if (sk !== undefined) opts.coupling!.satKnee = sk;
+    const sm = num('sat-min'); if (sm !== undefined) opts.coupling!.satMin = sm;
+    const km = num('k-max'); if (km !== undefined) opts.coupling!.kMax = km;
+  } else {
     // monochrome leaves coupling UNSET, so any coupling-override flag would be silently dropped;
     // reject loudly (matches the --palette-k-without--palette idiom) instead of ignoring it.
     const couplingFlags = (['couple-strength', 'sat-knee', 'sat-min', 'k-max'] as const).filter((k) => values[k] !== undefined);
     if (couplingFlags.length > 0) {
       console.error(`${couplingFlags.map((k) => `--${k}`).join('/')} require --identity-color-dither on (off is monochrome — no coupling)`); process.exit(2);
     }
-    opts.identityColorDither = false;
-  } else opts.coupling = coupling;
-  // Charset-coherence mode (spec §CLI). Default 'pure-ramp' (spec 변경 1: pure-ramp is the confirmed
-  // identity default coherence, ADR-0003); an explicit --identity-coherence overrides. Requires
-  // --identity (rejected above via overrideKeys).
-  opts.identityCoherence = 'pure-ramp';
-  const coh = values['identity-coherence'];
-  if (coh !== undefined) {
-    if (coh !== 'none' && coh !== 'ramp-bias' && coh !== 'pure-ramp' && coh !== 'smooth') {
-      console.error('--identity-coherence must be none|ramp-bias|pure-ramp|smooth'); process.exit(2);
-    }
-    opts.identityCoherence = coh;
   }
 }
 

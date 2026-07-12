@@ -109,7 +109,7 @@ const CSS = `
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; }
-.field-input { width: 100%; padding: 7px 9px; background: var(--bg); color: var(--ink);
+.field-input, .field-select { width: 100%; padding: 7px 9px; background: var(--bg); color: var(--ink);
   border: 1px solid var(--line); font-family: var(--font); font-size: 12px; }
 .field-slider-wrap { display: flex; align-items: center; gap: 10px; }
 .field-slider { flex: 1; accent-color: var(--accent); }

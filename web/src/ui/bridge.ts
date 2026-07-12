@@ -1,4 +1,5 @@
 import type { PipelineOutput } from '../pipeline.js';
+import type { ModelName } from '../models.js';
 
 // APP↔UI contract surface. main.ts owns the Scene + Pipeline and publishes the
 // latest run on `window.__app` (labelled there "UI control surface"); this module
@@ -15,11 +16,18 @@ export interface Params {
   yaw: number;
   pitch: number;
   floor: number; // Round A ASCII-identity contrast floor (working-space luma; 0 = off). Default 0.06 (dark-scene demo).
+  // feat/identity-web-wiring: ASCII-identity aesthetic knobs. identity OFF by default (byte-identical).
+  // Coherence union excludes 'smooth' (band-unsafe); identityColorDither true = colour, false = mono.
+  identity: boolean;
+  identityCoherence: 'none' | 'ramp-bias' | 'pure-ramp';
+  identityColorDither: boolean;
+  model: ModelName; // feat/web-model-picker: current procedural model (default 'torusknot').
 }
 
 export interface AppApi {
   rematch: () => Promise<void>;
   setParams: (p: Partial<Params>) => void;
+  setModel: (name: string) => void; // feat/web-model-picker: swap the procedural model (throws on unknown name).
   getState: () => { params: Params; ssim: number | null; busy: boolean };
   getOutput: () => PipelineOutput | null;
   // Params snapshot of the run that produced the current getOutput() grid — lets exports

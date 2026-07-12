@@ -148,3 +148,39 @@ describe('gate/gpu-fallback-verify: mid-run GPU failure route (SPEC §8.4 item 5
     expect(scene.renders).toBe(2);
   });
 });
+
+// feat/identity-web-wiring — the ASCII-identity preset is a Q2-only aesthetic that ONLY the CPU pool
+// applies; runGpu never reads the identity knobs. So an identity run that is not pinned to Q2 would
+// route to the GPU (quality===3) and silently drop the selection prior — a NO-FALLBACK violation.
+// pipeline.run() must reject it LOUDLY at the routing choke point. FAIL vs the un-guarded run(): with
+// a live GPU (mocks below) an {identity:true, quality:3} run resolves to matcher:'gpu' with the
+// identity fields ignored — no throw — so this expectation fails until the guard lands.
+describe('feat/identity-web-wiring: identity is Q2-only (no silent GPU drop)', () => {
+  const okMatcher = { available: true, matchPrepped: async () => ({ cells: [], matchMs: 1 }) };
+  const okRaster = {
+    available: true,
+    render: async () => ({ w: 8, h: 8, data: new Uint8ClampedArray(8 * 8 * 4).fill(200), rasterWallMs: 1, rasterGpuMs: 1 }),
+  };
+
+  it('rejects an identity run that is not pinned to Q2 (the GPU path ignores identity)', async () => {
+    matcherCreate.mockResolvedValue(okMatcher);
+    rasterCreate.mockResolvedValue(okRaster);
+    const pipeline = await makePipeline();
+    const scene = makeScene();
+
+    await expect(pipeline.run(scene, ATLAS, { ...PARAMS, quality: 3, identity: true }, true))
+      .rejects.toThrow(/quality 2/);
+  });
+
+  it('lets a Q2 identity run through to the CPU pool (matcher:pool, non-blank)', async () => {
+    matcherCreate.mockResolvedValue(okMatcher);
+    rasterCreate.mockResolvedValue(okRaster);
+    const pipeline = await makePipeline();
+    const scene = makeScene();
+
+    const out = await pipeline.run(scene, ATLAS, { ...PARAMS, quality: 2, identity: true, identityCoherence: 'pure-ramp', identityColorDither: true }, true);
+
+    expect(out.matcher).toBe('pool'); // Q2 → never the GPU
+    expect(maxLuma(out.raster)).toBeGreaterThan(0);
+  });
+});

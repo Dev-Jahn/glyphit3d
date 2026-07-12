@@ -5,7 +5,8 @@ import { rampGrid } from '../../src/core/ramp.js';
 import { rasterizeGrid } from '../../src/render/raster.js';
 import { ssim } from '../../src/metric/ssim.js';
 import { linearToSrgb } from '../../src/core/color.js';
-import { defaultOptions } from '../../src/core/options.js';
+import { bandMatchOptions } from './band-opts.js';
+import type { IdentityCoherence } from '../../src/core/identity-preset.js';
 import { prepQ3 } from './webgpu/prep.js';
 import type { PrepParams } from './webgpu/prep.js';
 
@@ -25,6 +26,11 @@ export interface MatchBandRequest {
   img: { w: number; h: number; data: Float32Array }; // band pixel slice, w × (bandRows·cellH)
   cols: number; quality: 0 | 1 | 2 | 3 | 4; space: 'linear' | 'gamma';
   contrastFloor?: number; // Round A ASCII-identity: per-cell, banding-safe (see below). 0/absent = off.
+  // feat/identity-web-wiring: the ASCII-identity preset knobs threaded from the demo controls. `identity`
+  // absent/false ⇒ byte-identical (bandMatchOptions skips the preset). identityCoherence carries the full
+  // core union so the band-safety guard can reject banded 'smooth' — the web never SENDS smooth (its
+  // dropdown excludes it), but the guard is the loud core-side defense (band-opts.ts).
+  identity?: boolean; identityCoherence?: IdentityCoherence; identityColorDither?: boolean;
 }
 export interface SsimRequest {
   type: 'ssim'; id: number;
@@ -127,19 +133,9 @@ ctx.onmessage = (e: MessageEvent<WorkerRequest>) => {
     if (!atlas) throw new Error(`worker: no atlas set for charset '${msg.charset}' (setAtlas first)`);
     const img: LinearImage = { w: msg.img.w, h: msg.img.h, data: msg.img.data };
 
-    const opts = defaultOptions(msg.quality);
-    opts.space = msg.space;
-    // Round A contrast floor (feat/contrast-floor-fill): per-cell (uses only that cell's stats,
-    // like the gate/collapse), so it is exact per band — no cross-cell coupling to guard against.
-    if (msg.contrastFloor) opts.contrastFloor = msg.contrastFloor;
-    // P2 banding assumption, kept VISIBLE: families/contour/topK/orientation are cross-cell
-    // passes that break per-band independence — never silently single-thread them. Q4's edge
-    // loss is ALSO cross-cell: matchGrid reads the full-image vertical gradient (dyT/gradTT
-    // from gradients()), which zero-pads at the band slice's top/bottom pixel rows — a FALSE
-    // interior boundary at every band seam — so a banded Q4 raster diverges from the true
-    // single-image Q4 along every seam. Reject it loudly rather than emit seam-corrupt output.
-    if (opts.families?.length || opts.topK || opts.orientKappa || (opts.quality === 4 && opts.edgeLambda > 0))
-      throw new Error('web band path does not support cross-cell passes (families/contour/Q4 edge loss)');
+    // Assemble the per-band MatchOptions (contrast floor + ASCII-identity preset) and enforce the
+    // band-safety guard (cross-cell passes incl. banded 'smooth' coherence) — shared, unit-tested.
+    const opts = bandMatchOptions(msg);
 
     const t1 = performance.now();
     // resample-free: the main thread renders exactly to the grid footprint and slices

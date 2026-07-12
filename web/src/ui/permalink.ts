@@ -8,7 +8,7 @@ import { el, panel } from './dom.js';
 function fragment(): string {
   const p = app().getState().params;
   const q = new URLSearchParams({
-    model: 'torusknot',
+    model: p.model, // feat/web-model-picker: the current procedural model (main.ts applyFragment reads it back)
     cols: String(p.cols),
     quality: String(p.quality),
     charset: p.charset,
