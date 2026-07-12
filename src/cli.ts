@@ -114,8 +114,12 @@ async function bakeCmd(): Promise<void> {
   const orientKappa = parseFloat(values['orient-kappa']!);
   const contourKappa = parseFloat(values['contour-kappa']!);
   const doContour = values.contour! && quality !== 0;
+  // Bake-path AOV gate (ADR-0003 §2): shading.png is loaded whenever split-selection OR shape-color
+  // coupling needs it — coupling binds ℓ to the shading-AOV cell mean, so `bake --identity` (coupling
+  // on) MUST load it; opts.aov is attached iff any AOV field is populated.
+  const gate = bakeAovGate({ split: eta, antibleed: kappa, styleAlbedo, orientKappa, coupling: !!opts.coupling });
   const aov: NonNullable<MatchOptions['aov']> = {};
-  if (eta > 0) aov.shadingLuma = await shadingLumaOf(req('shading.png'), space);
+  if (gate.shading) aov.shadingLuma = await shadingLumaOf(req('shading.png'), space);
   if (kappa > 0) aov.objectId = Uint16Array.from((await loadRaw(req('objectid.png'))).data);
   if (styleAlbedo) aov.albedo = await loadLinear(req('albedo.png'));
   // §3.2 silhouette coverage AOV (per-pixel [0,1]) drives the orientation edge field and
@@ -131,7 +135,7 @@ async function bakeCmd(): Promise<void> {
   if (styleAlbedo) opts.styleAlbedoColors = true;
   if (orientKappa > 0) { aov.coverage = coveragePix; opts.orientKappa = orientKappa; }
   if (doContour) opts.topK = 8;
-  if (eta > 0 || kappa > 0 || styleAlbedo || orientKappa > 0) opts.aov = aov;
+  if (gate.attach) opts.aov = aov;
 
   const t0 = performance.now();
   const grid = quality === 0 ? rampGrid(ref, atlas, opts) : matchGrid(ref, atlas, opts);
@@ -151,6 +155,20 @@ async function bakeCmd(): Promise<void> {
     console.error(`grid ${grid.cols}x${grid.rows}  cell ${atlas.cellW}x${atlas.cellH}  glyphs ${atlas.glyphs.length}  split ${eta} antibleed ${kappa}${styleAlbedo ? ' style-albedo' : ''}`);
     console.error(`Q${quality} SSIM ${s.toFixed(4)}  match ${elapsed.toFixed(1)}ms`);
   }
+}
+
+// Bake-path AOV gate (spec §4 / ADR-0003 §2). Pure so the coupling wiring is unit-testable — bakeCmd's
+// IO is not. `shading` (shading.png → aov.shadingLuma) is required by split-selection (split>0) AND by
+// shape-color coupling: ADR-0003 §2 binds the bake-path coupling illumination ℓ to the cell-mean
+// shadingLuma, so coupling ON MUST load shading.png — else match.ts's couplingShading is undefined and
+// coupling silently falls back to the ℓ=Ȳ 2D proxy. `attach` (opts.aov set) is true iff any AOV field
+// is populated (shadingLuma | objectId | albedo | coverage).
+export function bakeAovGate(f: {
+  split: number; antibleed: number; styleAlbedo: boolean; orientKappa: number; coupling: boolean;
+}): { shading: boolean; attach: boolean } {
+  const shading = f.split > 0 || f.coupling;
+  const attach = shading || f.antibleed > 0 || f.styleAlbedo || f.orientKappa > 0;
+  return { shading, attach };
 }
 
 // Working-space luma of the albedo-free shading render (§4.1). loadLinear gives
