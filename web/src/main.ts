@@ -206,7 +206,9 @@ document.addEventListener('drop', (e) => {
   // A model drop invalidates any retained temporal reference frame (SPEC §4.4 reset matrix) → the
   // next run must keyframe.
   forceKeyframe = true;
-  void scene.loadGLB(url).then(() => { params.yaw = scene.yawDeg; params.pitch = scene.pitchDeg; return coalescer.request(false); });
+  void scene.loadGLB(url)
+    .then(() => { params.yaw = scene.yawDeg; params.pitch = scene.pitchDeg; return coalescer.request(false); })
+    .finally(() => URL.revokeObjectURL(url));
 });
 
 // Playwright / UI control surface.
@@ -242,6 +244,9 @@ window.__app = {
   setModel: (name) => {
     if (!isModelName(name)) throw new Error(`unknown model '${name}'`);
     params.model = name;
+    // fix/model-drop-latest-wins: bump the model generation BEFORE the commit so this pick
+    // supersedes any in-flight loadGLB — its late resolution sees a newer generation and drops.
+    scene.nextModelGeneration();
     scene.setModel(makeModel(name));
     // A model swap invalidates any retained temporal reference frame (SPEC §4.4 reset matrix) → the
     // next run must keyframe — same as the GLB drop handler.

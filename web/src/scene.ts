@@ -39,6 +39,12 @@ export class Scene {
   private lights: THREE.Group | null = null;
   private center = new THREE.Vector3();
   private radius = 1;
+  // fix/model-drop-latest-wins: monotonic model-request generation. Every request-layer swap
+  // (a GLB drop, a procedural pick) bumps it; loadGLB captures its generation before the async
+  // load and re-checks it before committing, so an older-requested load that resolves LATE drops
+  // instead of clobbering the newer model. setModel stays the pure commit primitive and does NOT
+  // bump it.
+  private modelSeq = 0;
 
   yawDeg = 30;
   pitchDeg = -15;
@@ -73,8 +79,20 @@ export class Scene {
     this.rebuildLights();
   }
 
-  async loadGLB(url: string): Promise<void> {
-    const gltf = await new GLTFLoader().loadAsync(url);
+  // Request-layer generation bump (fix/model-drop-latest-wins). loadGLB calls this before its
+  // await; the procedural picker calls it before scene.setModel so a pick supersedes any in-flight
+  // loadGLB. Returns the new generation the caller must re-check against modelSeq before committing.
+  nextModelGeneration(): number {
+    return ++this.modelSeq;
+  }
+
+  // Latest-request-wins: capture this drop's generation, await the load, then commit only if no
+  // newer request (another drop or a pick) bumped modelSeq meanwhile — otherwise this stale load is
+  // dropped. `load` is injectable for tests; the default preserves the GLTFLoader behavior exactly.
+  async loadGLB(url: string, load: (u: string) => Promise<{ scene: THREE.Object3D }> = (u) => new GLTFLoader().loadAsync(u)): Promise<void> {
+    const seq = this.nextModelGeneration();
+    const gltf = await load(url);
+    if (seq !== this.modelSeq) return;
     this.setModel(gltf.scene);
   }
 
