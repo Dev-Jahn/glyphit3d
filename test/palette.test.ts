@@ -296,4 +296,11 @@ describe('palette mode guards + off-mode bit-identity', () => {
     expect(() => matchGrid(img, atlas, defaults({ quality: 3, palette: 'theme16', collapseThreshold: 16 }))).toThrow(/incompatible/);
     expect(() => matchGrid(img, atlas, defaults({ quality: 3, palette: 'theme16', families: ['braille'] }))).toThrow(/incompatible/);
   });
+
+  // The palette emit path never reaches the contrast-floor block, so palette + contrastFloor would
+  // silently drop the floor — reject the combination loudly instead of producing a floor-less fit.
+  it('rejects palette combined with contrastFloor', () => {
+    const img = randomImage(atlas, 1, 1, mulberry32(3));
+    expect(() => matchGrid(img, atlas, defaults({ quality: 3, palette: 'theme16', contrastFloor: 24 / 255 }))).toThrow(/contrast-floor/);
+  });
 });

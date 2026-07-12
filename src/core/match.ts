@@ -179,8 +179,8 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
     if (quality < 3) throw new Error('palette mode requires quality 3 or 4 (fg-bg)');
     if ((opts.families?.length ?? 0) > 0 || (opts.topK ?? 0) > 0 || (opts.splitSelection ?? 0) > 0 ||
         (opts.antibleedKappa ?? 0) > 0 || opts.styleAlbedoColors || (opts.collapseThreshold ?? 0) > 0 ||
-        (opts.orientKappa ?? 0) > 0) {
-      throw new Error('palette mode is incompatible with families/contour/topK/split/antibleed/style-albedo/collapse/orient');
+        (opts.orientKappa ?? 0) > 0 || (opts.contrastFloor ?? 0) > 0) {
+      throw new Error('palette mode is incompatible with families/contour/topK/split/antibleed/style-albedo/collapse/orient/contrast-floor');
     }
   }
   // scratch for the palette pair scorer (per-channel saT/STT with the Q4 edge augmentation folded in)
