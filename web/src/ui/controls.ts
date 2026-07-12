@@ -108,7 +108,11 @@ export class Controls {
       type: 'checkbox', checked: p.identity,
       change: () => {
         const on = identity.checked;
-        if (on) app().setParams({ identity: true, quality: 2 });
+        // ascii-first (parity with CLI --identity, which flips 'blocks'→'ascii'): the web default charset
+        // is 'blocks', so toggling identity ON without this would run the identity aesthetic over a blocks
+        // ramp. Force 'ascii' on both the param and the select DOM. OFF leaves the charset as-is (blocks
+        // stays selectable from the dropdown after identity is on).
+        if (on) { charset.value = 'ascii'; app().setParams({ identity: true, quality: 2, charset: 'ascii' }); }
         else app().setParams({ identity: false });
         ladder.setEnabled(!on);
         setIdentitySubEnabled(on);
