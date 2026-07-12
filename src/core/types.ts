@@ -131,6 +131,15 @@ export interface MatchOptions {
   //                  the already-decided raster-order left/top neighbors (μ = the cell's own λ·u·D·P).
   identityCoherence?: 'none' | 'ramp-bias' | 'pure-ramp' | 'smooth';
 
+  // feat/color-dither-toggle (spec 변경 2) — "색 dither" (= shape-color coupling) on/off. Default
+  // (absent or true) = coupling stays the color modulator (byte-identical to current behavior). false
+  // = MONOCHROME: on every identity Q2 emit (object-scan winner + gated-flat + topK candidate) the fg
+  // is forced to encode(fixedFg) EXACTLY, bypassing both the fg color fit (channelFB) and coupleFg; bg
+  // stays fixedBg. Brightness is carried by the pure-ramp glyph density (ρ* already targets LF=luma(ffg)
+  // so the density↔luma mapping stays consistent — no separate correction). Read ONLY when the identity
+  // prior is active (identityLambda>0); ignored otherwise, so identity-off output stays byte-identical.
+  identityColorDither?: boolean;
+
   // feat/shape-color-coupling (spec §4) — absent = off = byte-identical. Requires quality 2; throws
   // otherwise and throws with styleAlbedoColors (two competing color-rewrite passes). Rescales the
   // fitted fg by a hue-preserving luma gain k so the emitted cell DC-luma tracks the cell mean Ȳ

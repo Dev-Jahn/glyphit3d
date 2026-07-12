@@ -50,6 +50,7 @@ async function bakeCmd(): Promise<void> {
       'identity-lambda': { type: 'string' },
       'identity-tau': { type: 'string' },
       'identity-coherence': { type: 'string' },
+      'identity-color-dither': { type: 'string' },
       'couple-strength': { type: 'string' },
       'sat-knee': { type: 'string' },
       'sat-min': { type: 'string' },
@@ -64,7 +65,7 @@ async function bakeCmd(): Promise<void> {
   });
   const target = positionals[0];
   if (!target) {
-    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--identity-coherence none|ramp-bias|pure-ramp|smooth] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli bake <model.glb|.gltf|aov-dir> --cols 120 --quality 3 [--split N] [--antibleed N] [--style-albedo] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--identity-coherence none|ramp-bias|pure-ramp|smooth] [--identity-color-dither on|off] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const cols = parseInt(values.cols!, 10);
@@ -230,7 +231,7 @@ function identityCharset(identity: boolean, charset: string): keyof typeof CHARS
 // three members of the aesthetic family: the selection prior (λ=5, τ=2.5e-4), shape-color coupling
 // (defaults) and the contrast floor (24/255≈0.0941 working luma — the u8-24 visibility threshold).
 // Override flags refine individual knobs; any override without --identity is rejected loudly.
-function applyIdentity(opts: MatchOptions, values: Record<string, string | boolean | undefined>): void {
+export function applyIdentity(opts: MatchOptions, values: Record<string, string | boolean | undefined>): void {
   const num = (k: string): number | undefined => {
     const v = values[k];
     if (v === undefined) return undefined;
@@ -238,7 +239,7 @@ function applyIdentity(opts: MatchOptions, values: Record<string, string | boole
     if (!Number.isFinite(n)) { console.error(`--${k} must be a number`); process.exit(2); }
     return n;
   };
-  const overrideKeys = ['identity-lambda', 'identity-tau', 'identity-coherence', 'couple-strength', 'sat-knee', 'sat-min', 'k-max', 'floor'];
+  const overrideKeys = ['identity-lambda', 'identity-tau', 'identity-coherence', 'identity-color-dither', 'couple-strength', 'sat-knee', 'sat-min', 'k-max', 'floor'];
   const anyOverride = overrideKeys.some((k) => values[k] !== undefined);
   if (!values.identity) {
     if (anyOverride) { console.error('--identity-* / --couple-strength / --sat-knee / --sat-min / --k-max / --floor require --identity'); process.exit(2); }
@@ -257,8 +258,26 @@ function applyIdentity(opts: MatchOptions, values: Record<string, string | boole
   const sk = num('sat-knee'); if (sk !== undefined) coupling.satKnee = sk;
   const sm = num('sat-min'); if (sm !== undefined) coupling.satMin = sm;
   const km = num('k-max'); if (km !== undefined) coupling.kMax = km;
-  opts.coupling = coupling;
-  // Charset-coherence mode (spec §CLI). Requires --identity (rejected above via overrideKeys).
+  // Color dither toggle (spec 변경 2). on (default) = coupling stays the color modulator. off =
+  // monochrome: matchGrid forces fg=encode(fixedFg) on every identity Q2 emit, so coupling is left
+  // UNSET (no color-modulation pass). Requires --identity (rejected above via overrideKeys).
+  const dither = values['identity-color-dither'];
+  if (dither !== undefined && dither !== 'on' && dither !== 'off') {
+    console.error('--identity-color-dither must be on|off'); process.exit(2);
+  }
+  if (dither === 'off') {
+    // monochrome leaves coupling UNSET, so any coupling-override flag would be silently dropped;
+    // reject loudly (matches the --palette-k-without--palette idiom) instead of ignoring it.
+    const couplingFlags = (['couple-strength', 'sat-knee', 'sat-min', 'k-max'] as const).filter((k) => values[k] !== undefined);
+    if (couplingFlags.length > 0) {
+      console.error(`${couplingFlags.map((k) => `--${k}`).join('/')} require --identity-color-dither on (off is monochrome — no coupling)`); process.exit(2);
+    }
+    opts.identityColorDither = false;
+  } else opts.coupling = coupling;
+  // Charset-coherence mode (spec §CLI). Default 'pure-ramp' (spec 변경 1: pure-ramp is the confirmed
+  // identity default coherence, ADR-0003); an explicit --identity-coherence overrides. Requires
+  // --identity (rejected above via overrideKeys).
+  opts.identityCoherence = 'pure-ramp';
   const coh = values['identity-coherence'];
   if (coh !== undefined) {
     if (coh !== 'none' && coh !== 'ramp-bias' && coh !== 'pure-ramp' && coh !== 'smooth') {
@@ -288,6 +307,7 @@ async function main(): Promise<void> {
       'identity-lambda': { type: 'string' },
       'identity-tau': { type: 'string' },
       'identity-coherence': { type: 'string' },
+      'identity-color-dither': { type: 'string' },
       'couple-strength': { type: 'string' },
       'sat-knee': { type: 'string' },
       'sat-min': { type: 'string' },
@@ -302,7 +322,7 @@ async function main(): Promise<void> {
   });
 
   if (positionals[0] !== 'image' || !positionals[1]) {
-    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--identity-coherence none|ramp-bias|pure-ramp|smooth] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
+    console.error('usage: cli image <input.png> --cols N --quality 0..4 --space linear|gamma --charset <set> --font <ttf> --font-size N [--palette theme16|256 [--palette-k K]] [--orient-kappa N] [--contour --contour-kappa N] [--identity [--identity-lambda N] [--identity-tau N] [--identity-coherence none|ramp-bias|pure-ramp|smooth] [--identity-color-dither on|off] [--couple-strength N] [--sat-knee N] [--sat-min N] [--k-max N] [--floor N]] [-o out.ansi] [--html f] [--png f] [--diff f] [--stats]');
     process.exit(2);
   }
   const input = positionals[1];

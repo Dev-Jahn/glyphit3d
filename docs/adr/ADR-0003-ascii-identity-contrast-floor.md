@@ -96,6 +96,12 @@ Q2를 대상으로 하는 미학 변조**로, §6 사다리와 직교한 opt-in 
   coupling(defaults), contrastFloor=24/255. `--quality 2`를 **함의**(다른 명시 quality는 hard
   error). override 플래그(`--identity-lambda/-tau/--couple-*/--floor` 등)는 진단 sweep용이며
   수용은 defaults로만 판정(spec §6.4).
+- **기본 coherence = pure-ramp**(2026-07-12 사용자 판정, feat/color-dither-toggle): charset
+  일관성 노브(none/ramp-bias/pure-ramp/smooth, feat/identity-ascii-charset-coherence)의 4모드
+  육안 비교에서 **pure-ramp만 글리프 램프가 일관**(나머지는 glyph 수프) → identity **CLI 기본
+  coherence로 확정**(`--identity-coherence`로 override; matchGrid 명시-opts 기본은 'none' 유지라
+  기존 재구성 경로는 불변). 색 dither는 `--identity-color-dither on|off`로 노출 —
+  off=monochrome(fg=encode(fixedFg), coupling 미설정, 밝기는 pure-ramp 밀도가 나름).
 
 ### 3. 사전등록 결과와 수용 판정 (정직, verbatim — 완화 금지)
 

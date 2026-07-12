@@ -113,6 +113,12 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
     if ((opts.families?.length ?? 0) > 0) throw new Error('identity selection prior is not supported with families in v1 (penalty not forwarded into solveFamily)');
     if (LF - LB < 0.5) throw new Error('identity selection prior requires L_F − L_B ≥ 0.5 working luma (bright-fg-on-dark-bg; ρ* degenerates otherwise)');
   }
+  // feat/color-dither-toggle (spec 변경 2): monochrome emit. Only meaningful with the identity prior
+  // on (identityLambda>0 ⇒ quality 2 by the guard above). When set it forces fg=encode(ffg) on the Q2
+  // identity emit paths (object-scan winner, gated flat, topK candidate), bypassing coupling AND the fg
+  // color fit (channelFB) and the contrast floor (moot: fg=ffg over fbg is legible by construction).
+  // identityColorDither absent/true ⇒ false ⇒ every guarded block below is inert (byte-identical, V1).
+  const identityMono = identityLambda > 0 && opts.identityColorDither === false;
   // feat/identity-ascii-charset-coherence (spec): selectable charset-coherence mode. 'none'/absent →
   // no new logic runs → byte-identical (top invariant). Any non-'none' mode requires the identity
   // prior on (identityLambda>0) AND quality 2 — same loud-throw contract as the other identity flags
@@ -419,9 +425,13 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
               const m = mean[c]!;
               fg[c] = channelFB(gStats, m * g.sumA, P * m, P * m * m, quality, m, m, ffg[c]!, fbg[c]!)[0];
             }
-            // Shape-color coupling on the gated Q2 emit (spec §4.3: gated Q2 emits are IN scope —
-            // uniform bright regions are the primary target). The gated glyph's own ρ̄ drives k.
-            if (couplingParams) {
+            // Monochrome (spec 변경 2): force fg=encode(ffg) exactly, bypassing the fg fit above and
+            // coupling — the classic single-color ASCII emit. Else shape-color coupling on the gated Q2
+            // emit (spec §4.3: gated Q2 emits are IN scope — uniform bright regions are the primary
+            // target). The gated glyph's own ρ̄ drives k.
+            if (identityMono) {
+              fg[0] = ffg[0]; fg[1] = ffg[1]; fg[2] = ffg[2];
+            } else if (couplingParams) {
               const YbarC = luma(mean[0], mean[1], mean[2]);
               const cf = coupleFg([fg[0], fg[1], fg[2]], g.sumA / P, YbarC, LB, cellIllum(x0, y0, YbarC), couplingParams);
               fg[0] = cf[0]; fg[1] = cf[1]; fg[2] = cf[2];
@@ -702,9 +712,13 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
             const fb = channelFB(gStats, saT, ST[c]!, stt, quality, minT[c]!, maxT[c]!, ffg[c]!, fbg[c]!);
             cF[c] = fb[0]; cB[c] = fb[1];
           }
-          // §4.3 cand[0]==emit invariant: apply the SAME coupling per candidate (each with its own
-          // glyph's ρ̄) BEFORE encoding — else contourPostPass would resurrect uncoupled colors. Q2.
-          if (couplingParams) {
+          // §4.3 cand[0]==emit invariant: the candidate fg must match what the winner will emit, or
+          // contourPostPass would resurrect the wrong color. Monochrome forces fg=encode(ffg) (matching
+          // the winner path below); else apply the SAME coupling per candidate (each with its own
+          // glyph's ρ̄) BEFORE encoding. Q2.
+          if (identityMono) {
+            cF[0] = ffg[0]; cF[1] = ffg[1]; cF[2] = ffg[2];
+          } else if (couplingParams) {
             const cf = coupleFg([cF[0], cF[1], cF[2]], gg.sumA / P, YbarC, LB, ellC, couplingParams);
             cF[0] = cf[0]; cF[1] = cf[1]; cF[2] = cf[2];
           }
@@ -798,11 +812,15 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
         }
       }
 
-      // Shape-color coupling (spec §4.3): applied to the fitted fg AFTER the fg fit and BEFORE the
-      // contrast floor — the floor is the family's legibility guarantor and must see the colors that
-      // will actually be emitted. Q2 only (guard); coupling∧styleAlbedo is thrown, so styleAlbedo is
-      // off here. Mutates F in place so the floor, emitWinner and singleCand all see the coupled fg.
-      if (couplingParams) {
+      // Monochrome (spec 변경 2): force fg=encode(ffg) exactly, bypassing the fg fit above, coupling and
+      // (below) the contrast floor — the classic single-color ASCII emit. Else shape-color coupling
+      // (spec §4.3): applied to the fitted fg AFTER the fg fit and BEFORE the contrast floor — the floor
+      // is the family's legibility guarantor and must see the colors that will actually be emitted. Q2
+      // only (guard); coupling∧styleAlbedo is thrown, so styleAlbedo is off here. Mutates F in place so
+      // the floor, emitWinner and singleCand all see the emitted fg.
+      if (identityMono) {
+        F[0] = ffg[0]; F[1] = ffg[1]; F[2] = ffg[2];
+      } else if (couplingParams) {
         const YbarC = luma(ST[0]! / P, ST[1]! / P, ST[2]! / P);
         const cf = coupleFg([F[0], F[1], F[2]], g.sumA / P, YbarC, LB, cellIllum(x0, y0, YbarC), couplingParams);
         F[0] = cf[0]; F[1] = cf[1]; F[2] = cf[2];
@@ -815,7 +833,7 @@ export function matchGrid(img: LinearImage, atlas: Atlas, opts: MatchOptions): G
       // Q4 edge objective (which only picked the glyph). Q1 exempt; families/stylization skip this
       // (handled above / colors already committed). contrastFloor=0 → this whole block is dead.
       let floored = false;
-      if (contrastFloor > 0 && quality !== 1 && !styleAlbedo) {
+      if (contrastFloor > 0 && quality !== 1 && !styleAlbedo && !identityMono) {
         const gPlain: FitStatsG = { Saa: g.sumAA, Sa1: g.sumA, S11: P };
         const fr = contrastFloorFit(gPlain, F, B, ST, STT, saTc, P, contrastFloor, quality === 2, space);
         if (fr) {
