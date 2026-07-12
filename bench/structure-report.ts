@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { dirname, join } from 'node:path';
 import { buildAtlas } from '../src/atlas/atlas.js';
@@ -90,6 +90,16 @@ type Scored = CasStats & { ssim: number };
 type ScoreKey = keyof CasStats | 'ssim'; // every scored field is a number → direct indexing is type-safe
 type Row = { label: string; per: Scored[] };
 function mean(xs: number[]): number { return xs.reduce((a, b) => a + b, 0) / xs.length; }
+
+// Standardized effect size d = mean/std of the per-image margins (sample std, n−1).
+// Dimensionless and invariant under affine re-expression of the metric (margins scale by |a|
+// in both mean and std), so — unlike a ratio of raw margins — it IS comparable across metrics.
+// Exported: test/structure-report.test.ts pins the scale-invariance contract.
+export function effectSize(margins: number[]): number {
+  const m = mean(margins);
+  const sd = Math.sqrt(margins.reduce((a, x) => a + (x - m) ** 2, 0) / (margins.length - 1));
+  return m / sd;
+}
 
 async function main(): Promise<void> {
   if (!existsSync(CHAFA)) { console.error(`chafa binary missing at ${CHAFA}`); process.exit(2); }
@@ -181,20 +191,19 @@ async function main(): Promise<void> {
   L.push('');
 
   // headline de-saturation: the object-structure margin CAS resolves vs the full-frame SSIM
-  // margin it compresses. ours Q3 − chafa, per metric, with the amplification ratio.
+  // margin it compresses. ours Q3 − chafa, per metric, with the standardized effect size.
+  // NOT a cross-metric ratio of raw margins — that would rescale with either metric's unit.
   L.push('## Headline: ours-Q3 − chafa margin — CAS resolves what full-frame SSIM compresses');
   L.push('');
-  L.push('The same reconstruction lead, measured by each metric. SSIM (full frame, DC-saturated) compresses it into the 3rd–4th decimal; CAS (object mask, DC-removed, structure-weighted) resolves the object-cell structure margin several× larger. This is the concrete de-saturation.');
+  L.push('The same reconstruction lead, measured by each metric. SSIM (full frame, DC-saturated) compresses it into the 3rd–4th decimal near its ceiling; CAS (object mask, DC-removed, structure-weighted) separates the object-cell structure margin. Raw margins are NOT comparable across metrics (a ratio of raw margins changes under a mere affine re-expression of either metric); the cross-metric comparable summary is the standardized effect size d = mean/std of the per-image margins (sample std, n−1; n=6 — small sample, read qualitatively). Scale-free corroboration: the Q4−Q3 delta above, where SSIM\'s +0.0001 flips sign across images (noise) while CAS holds a consistent sign.');
   L.push('');
-  L.push(`| metric | ${IMAGES.join(' | ')} | mean margin | × vs SSIM |`);
+  L.push(`| metric | ${IMAGES.join(' | ')} | mean margin | effect size d |`);
   L.push(`|---|${IMAGES.map(() => '---').join('|')}|---|---|`);
   const q3 = qRows[2]!;
-  const ssimMargin = mean(ctxs.map((_, i) => q3.per[i]!.ssim - chafaRow.per[i]!.ssim));
   for (const st of stats) {
     const m = ctxs.map((_, i) => q3.per[i]![st.key] - chafaRow.per[i]![st.key]);
     const mm = mean(m);
-    const ratio = st.key === 'ssim' ? '1.0×' : `${(mm / ssimMargin).toFixed(1)}×`;
-    L.push(`| ${String(st.key)} | ${m.map((x) => (x >= 0 ? '+' : '') + x.toFixed(4)).join(' | ')} | ${(mm >= 0 ? '+' : '') + mm.toFixed(4)} | ${ratio} |`);
+    L.push(`| ${String(st.key)} | ${m.map((x) => (x >= 0 ? '+' : '') + x.toFixed(4)).join(' | ')} | ${(mm >= 0 ? '+' : '') + mm.toFixed(4)} | ${effectSize(m).toFixed(2)} |`);
   }
   L.push('');
 
@@ -226,4 +235,8 @@ async function main(): Promise<void> {
   console.log(`\nwrote bench/out/structure-report.md`);
 }
 
-main().catch((e) => { console.error(e); process.exit(2); });
+// Run only as a direct script (npx tsx bench/structure-report.ts) — importing the exported
+// effectSize helper from a test must not trigger the bench.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => { console.error(e); process.exit(2); });
+}

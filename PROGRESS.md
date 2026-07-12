@@ -11,7 +11,7 @@ git 히스토리와 `docs/M0~M3-SPEC·RESULTS.md`, `docs/ROUND-P-SPEC.md`가 그
 - **Goal**: 사용자 지시 "남은 작업 전부 병렬로 완료까지" — registry 잔여 태스크 전면 소진. wave-1 6 lanes(격리 worktree ∥ opus 구현 → clean 적대 리뷰(fable=수학/코어) → 수정) + wave-2 chains(GPU 래스터→temporal ∥ 미학 피벗) → main 직렬 통합(작업 단위 커밋, 매 통합 전 게이트 green). 15 commits (9a20027..f8d033d).
 - **Shipped** (18 done):
   - fix/rematch-single-flight-gpu-race — 모든 rematch 진입점을 coalescer 단일 큐로(F1R-1); fix/gpu-matcher-cstat-host-realloc — cstatHost 독립 재할당+충돌쌍 회귀(F2R-1)
-  - docs/metric-redesign — CAS 셀-AC 구조 headline(ADR-0002, DESIGN §10): SSIM 대비 5.3~5.9× 해상, 물체 마스크 극성 blocker 리뷰 발견→수정
+  - docs/metric-redesign — CAS 셀-AC 구조 headline(ADR-0002, DESIGN §10): SSIM이 천장 포화로 압축하는 ours−chafa 구조 마진을 CAS가 해상(척도 불변 효과크기 d = 이미지별 마진 mean/std: wmean 3.29 vs SSIM 1.14; 종전 cross-metric 배수 표현은 척도 의존이라 fix/cas-multiplier-claim에서 철회), 물체 마스크 극성 blocker 리뷰 발견→수정
   - feat/palette-constrained-color — theme16 전수 정확해 + palette-256 project-then-refine(리뷰 major 2 수정)
   - feat/contrast-floor-fill — 제약 refit(gamut-constrained DC re-solve) + GPU per-cell post-pass(CPU와 cell 동일 증명); 데모 642→0 invisible cells, 재구성 비용 −0.0033 정직 공표
   - perf/gpu-rasterizer — 래스터→WebGPU + prep→worker(스펙 프로브가 OQ1 전제 반증: main-thread 블록 2개); maxGap 93→11-20ms, 드래그 4.5→12.9-14.3 updates/s; raster parity 13/13
