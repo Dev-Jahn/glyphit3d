@@ -254,18 +254,18 @@ tasks:
     severity: "minor"
   - id: fix/bake-identity-aov-wiring
     title: "CLI bake --identity가 shading.png AOV를 coupling에 미배선(ℓ=Ȳ fallback으로 동작, ADR-0003 ℓ 계약 위반): cli.ts AOV 게이트 2곳(shadingLuma 로드·opts.aov 부착)에 opts.coupling 조건 추가 + CLI 경로 테스트"
-    status: "pending"
+    status: "done"
     severity: "major"
     anchor: "ADR-0003 §2"
     origin: "review-2026-07-10-frontier-sweep"
   - id: fix/palette-floor-guard
     title: "palette×contrastFloor 조합이 floor를 silent 무시(palette winner가 floor 블록 도달 전 continue; 형제 옵션 collapse는 이미 거부됨): palette 가드에 contrastFloor 추가해 명시 throw + 회귀 테스트"
-    status: "pending"
+    status: "done"
     severity: "major"
     origin: "review-2026-07-10-frontier-sweep"
   - id: fix/model-drop-latest-wins
     title: "연속 모델 drop이 latest-wins 아님: Scene.loadGLB가 load/commit 미분리·세대 가드 없음이라 늦게 로드된 옛 모델이 setModel로 최종 상태를 덮어씀 — modelSeq 가드 + load/commit 분리 + revokeObjectURL 누수 수정"
-    status: "pending"
+    status: "done"
     severity: "major"
     origin: "review-2026-07-10-frontier-sweep"
   - id: fix/identity-ab-blinding-protocol
@@ -276,7 +276,7 @@ tasks:
     origin: "review-2026-07-10-frontier-sweep"
   - id: fix/cas-multiplier-claim
     title: "CAS 'SSIM 대비 5.3–5.9× 해상' 배수 주장은 척도 단위 종속(CAS affine 재표기만으로 절반): 배수 표현 철회(ADR-0002 표·prose, PROGRESS, structure-report '× vs SSIM' 열·prose) — 정성적 SSIM-포화 주장은 독립 근거로 유지, 정량 비교는 scale-invariant effect size로 대체"
-    status: "pending"
+    status: "done"
     severity: "major"
     anchor: "ADR-0002"
     origin: "review-2026-07-10-frontier-sweep"
@@ -309,3 +309,7 @@ tasks:
     title: "web 데모에 선택 가능한 3D 모델 여러 종 추가(현재 torus knot만) — 프로시저럴 three.js 지오메트리(sphere/torus/box/cone/cylinder/icosahedron/teapot 등) + controls.ts <select> + main.ts __app.setModel(forceKeyframe+coalescer) + bridge.ts AppApi. render→match 그대로 통과, 파이프라인 변경 불요"
     status: "done"
     severity: "major"
+  - id: chore/identity-web-ascii-default
+    title: "웹 ASCII-identity 토글이 charset도 ascii로 전환하도록(현재는 charset 별도 — 토글 시 charset=blocks면 blocks 램프가 나옴). CLI --identity는 ascii-first인데 웹은 수동. 사용자 ascii-first 우선순위에 맞춰 identity ON 시 charset 미명시면 ascii 기본"
+    status: "done"
+    severity: "minor"
